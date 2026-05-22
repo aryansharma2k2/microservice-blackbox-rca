@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-label="RCA pipeline">
+  <rect width="1200" height="360" fill="#f7f8f4"/>
+  <style>
+    .title{font:700 30px system-ui,-apple-system,Segoe UI,sans-serif;fill:#16211c}
+    .step{fill:#fff;stroke:#d9ded5;stroke-width:2}
+    .num{font:800 18px system-ui,-apple-system,Segoe UI,sans-serif;fill:#fff}
+    .label{font:800 17px system-ui,-apple-system,Segoe UI,sans-serif;fill:#16211c}
+    .small{font:600 12px system-ui,-apple-system,Segoe UI,sans-serif;fill:#5c6a63}
+    .arrow{stroke:#88958d;stroke-width:3;fill:none;marker-end:url(#arrow)}
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L0,8 L11,4 z" fill="#88958d"/>
+    </marker>
+  </defs>
+  <text x="48" y="58" class="title">FChain-Style RCA Pipeline</text>
+  <g transform="translate(50 115)">
+    <rect width="180" height="130" rx="10" class="step"/>
+    <circle cx="32" cy="32" r="18" fill="#2f7d58"/><text x="27" y="38" class="num">1</text>
+    <text x="24" y="76" class="label">CUSUM</text>
+    <text x="24" y="102" class="small">candidate change points</text>
+  </g>
+  <path d="M240 180 L300 180" class="arrow"/>
+  <g transform="translate(310 115)">
+    <rect width="180" height="130" rx="10" class="step"/>
+    <circle cx="32" cy="32" r="18" fill="#315f9f"/><text x="27" y="38" class="num">2</text>
+    <text x="24" y="76" class="label">Markov Filter</text>
+    <text x="24" y="102" class="small">baseline normality check</text>
+  </g>
+  <path d="M500 180 L560 180" class="arrow"/>
+  <g transform="translate(570 115)">
+    <rect width="180" height="130" rx="10" class="step"/>
+    <circle cx="32" cy="32" r="18" fill="#167882"/><text x="27" y="38" class="num">3</text>
+    <text x="24" y="76" class="label">FFT Filter</text>
+    <text x="24" y="102" class="small">predictable burst removal</text>
+  </g>
+  <path d="M760 180 L820 180" class="arrow"/>
+  <g transform="translate(830 115)">
+    <rect width="180" height="130" rx="10" class="step"/>
+    <circle cx="32" cy="32" r="18" fill="#c95f45"/><text x="27" y="38" class="num">4</text>
+    <text x="24" y="76" class="label">Rollback</text>
+    <text x="24" y="102" class="small">refined anomaly onset</text>
+  </g>
+  <path d="M1020 180 L1080 180" class="arrow"/>
+  <g transform="translate(1090 115)">
+    <rect width="90" height="130" rx="10" class="step"/>
+    <circle cx="32" cy="32" r="18" fill="#b88726"/><text x="27" y="38" class="num">5</text>
+    <text x="18" y="76" class="label">Rank</text>
+    <text x="18" y="102" class="small">root cause</text>
+  </g>
+</svg>

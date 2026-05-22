@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-label="Microservice RCA system architecture">
+  <rect width="1200" height="520" fill="#f7f8f4"/>
+  <style>
+    .title{font:700 30px system-ui,-apple-system,Segoe UI,sans-serif;fill:#16211c}
+    .label{font:700 17px system-ui,-apple-system,Segoe UI,sans-serif;fill:#16211c}
+    .small{font:600 13px system-ui,-apple-system,Segoe UI,sans-serif;fill:#5c6a63}
+    .box{fill:#fff;stroke:#d9ded5;stroke-width:2}
+    .green{fill:#edf8f1;stroke:#2f7d58}
+    .blue{fill:#f0f5ff;stroke:#315f9f}
+    .coral{fill:#fff2ee;stroke:#c95f45}
+    .arrow{stroke:#88958d;stroke-width:3;fill:none;marker-end:url(#arrow)}
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L0,8 L11,4 z" fill="#88958d"/>
+    </marker>
+  </defs>
+  <text x="50" y="58" class="title">Black-Box RCA Experiment Architecture</text>
+  <rect x="50" y="105" width="235" height="100" rx="10" class="box green"/>
+  <text x="78" y="145" class="label">Load Generator</text>
+  <text x="78" y="174" class="small">Synthetic user journeys</text>
+  <rect x="365" y="80" width="290" height="150" rx="12" class="box"/>
+  <text x="395" y="124" class="label">Online Boutique</text>
+  <text x="395" y="153" class="small">11 Kubernetes services</text>
+  <text x="395" y="179" class="small">frontend, cart, checkout, payment...</text>
+  <rect x="735" y="105" width="185" height="100" rx="10" class="box coral"/>
+  <text x="763" y="145" class="label">Chaos Mesh</text>
+  <text x="763" y="174" class="small">Fault injection</text>
+  <rect x="365" y="310" width="235" height="100" rx="10" class="box blue"/>
+  <text x="393" y="350" class="label">Prometheus</text>
+  <text x="393" y="379" class="small">Pod metric collection</text>
+  <rect x="690" y="310" width="220" height="100" rx="10" class="box green"/>
+  <text x="718" y="350" class="label">RCA Engine</text>
+  <text x="718" y="379" class="small">FChain-style ranking</text>
+  <rect x="985" y="310" width="165" height="100" rx="10" class="box"/>
+  <text x="1013" y="350" class="label">Dashboard</text>
+  <text x="1013" y="379" class="small">Static replay</text>
+  <path d="M285 155 C320 155, 330 155, 365 155" class="arrow"/>
+  <path d="M735 155 C705 155, 690 155, 655 155" class="arrow"/>
+  <path d="M510 230 L510 310" class="arrow"/>
+  <path d="M600 360 L690 360" class="arrow"/>
+  <path d="M910 360 L985 360" class="arrow"/>
+  <path d="M835 205 C835 250, 790 268, 790 310" class="arrow"/>
+</svg>
