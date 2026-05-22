@@ -76,6 +76,18 @@ a {
   color: var(--ink);
 }
 
+.github-link {
+  padding: 8px 12px;
+  color: #fff;
+  background: var(--ink);
+  border-radius: 999px;
+}
+
+.github-link:hover {
+  color: #fff;
+  background: var(--green);
+}
+
 main {
   overflow: hidden;
 }
