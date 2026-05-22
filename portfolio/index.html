@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Interactive portfolio demo for black-box root-cause analysis on microservices.">
+    <title>Microservice Black-Box RCA</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#overview" aria-label="Microservice Black-Box RCA home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Black-Box RCA</span>
+      </a>
+      <nav class="nav" aria-label="Dashboard sections">
+        <a href="#experiment">Experiment</a>
+        <a href="#graph">Graph</a>
+        <a href="#pipeline">Pipeline</a>
+        <a href="#reproduce">Reproduce</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="overview" class="overview-band">
+        <div class="overview-copy">
+          <p class="eyebrow">Kubernetes fault injection + Prometheus telemetry</p>
+          <h1>Microservice Black-Box RCA</h1>
+          <p class="lede">
+            A deployed research dashboard for an FChain-style root-cause analysis engine,
+            built from a real Online Boutique chaos experiment.
+          </p>
+          <div class="stat-strip" aria-label="Experiment summary">
+            <div>
+              <strong id="stat-fault">-</strong>
+              <span>fault</span>
+            </div>
+            <div>
+              <strong id="stat-latency">-</strong>
+              <span>diagnosis latency</span>
+            </div>
+            <div>
+              <strong id="stat-runtime">-</strong>
+              <span>RCA runtime</span>
+            </div>
+          </div>
+        </div>
+        <div class="signal-panel" aria-label="Latency signal overview">
+          <div class="panel-head">
+            <span>frontend p95 SLO</span>
+            <strong id="slo-threshold">-</strong>
+          </div>
+          <svg id="hero-chart" class="hero-chart" viewBox="0 0 620 260" role="img" aria-label="Latency signal crossing the SLO threshold"></svg>
+        </div>
+      </section>
+
+      <section id="experiment" class="section">
+        <div class="section-head">
+          <p class="eyebrow">Run 20260423_155718</p>
+          <h2>Experiment Replay</h2>
+        </div>
+        <div class="experiment-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <span>timeline</span>
+              <strong id="trigger-mode">-</strong>
+            </div>
+            <ol id="timeline" class="timeline"></ol>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <span>ranked suspects</span>
+              <strong>top 3</strong>
+            </div>
+            <div id="ranking" class="ranking"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <p class="eyebrow">Telemetry</p>
+          <h2>Metric Evidence</h2>
+        </div>
+        <div id="metric-grid" class="metric-grid"></div>
+      </section>
+
+      <section id="graph" class="section">
+        <div class="section-head">
+          <p class="eyebrow">Online Boutique</p>
+          <h2>Dependency Graph</h2>
+        </div>
+        <div class="graph-wrap">
+          <svg id="dependency-graph" viewBox="0 0 980 560" role="img" aria-label="Online Boutique dependency graph"></svg>
+        </div>
+      </section>
+
+      <section id="pipeline" class="section">
+        <div class="section-head">
+          <p class="eyebrow">Algorithm</p>
+          <h2>RCA Pipeline</h2>
+        </div>
+        <div id="pipeline-steps" class="pipeline"></div>
+      </section>
+
+      <section id="reproduce" class="section reproduce">
+        <div class="section-head">
+          <p class="eyebrow">Reproducible locally</p>
+          <h2>Run The Real System</h2>
+        </div>
+        <div class="command-grid">
+          <pre><code>bash infra/deploy-boutique.sh
+bash infra/deploy-monitoring.sh
+bash infra/deploy-chaos-mesh.sh</code></pre>
+          <pre><code>python eval/run_experiment_slo.py \
+  --fault cpu_hog \
+  --service cartservice \
+  --duration 60</code></pre>
+        </div>
+        <p>
+          The hosted dashboard is static because free public hosting cannot run privileged
+          Kubernetes fault injection. The experiment runner remains available for local
+          kind or minikube clusters.
+        </p>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

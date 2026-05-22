@@ -2,6 +2,20 @@
 
 Black-box root-cause analysis for microservice failures using metrics, change-point detection, and fault-chain pinpointing.
 
+## Portfolio demo
+
+This repo includes a dependency-free static dashboard in `portfolio/` for free hosting on GitHub Pages or Cloudflare Pages. It replays a real chaos experiment artifact and presents the RCA ranking, telemetry signals, dependency graph, and local reproduction commands.
+
+Local preview:
+
+```bash
+python3 -m http.server 4173 --directory portfolio
+```
+
+Then open `http://localhost:4173`.
+
+GitHub Pages deployment is configured in `.github/workflows/pages.yml`. In the GitHub repository settings, set **Pages -> Source** to **GitHub Actions**, then push to `main`.
+
 ---
 
 ## Prerequisites

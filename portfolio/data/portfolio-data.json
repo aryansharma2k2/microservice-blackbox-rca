@@ -1,0 +1,276 @@
+{
+  "project": {
+    "title": "Microservice Black-Box RCA",
+    "subtitle": "Fault injection, Prometheus telemetry, and FChain-style root-cause ranking for Online Boutique.",
+    "stack": [
+      "Python",
+      "Kubernetes",
+      "Prometheus",
+      "Chaos Mesh",
+      "FChain",
+      "Online Boutique"
+    ]
+  },
+  "run": {
+    "id": "20260423_155718",
+    "fault": "cpu_hog",
+    "targetService": "cartservice",
+    "durationSeconds": 60,
+    "injector": "chaos",
+    "triggerMode": "slo_violation",
+    "baselineP95Ms": 29.6,
+    "sloThresholdMs": 41.489933617413044,
+    "diagnosisLatencySeconds": 5.0,
+    "rcaRuntimeSeconds": 1.353,
+    "timeline": [
+      {
+        "label": "Experiment start",
+        "time": 1776959838.8651268
+      },
+      {
+        "label": "Baseline end",
+        "time": 1776959878.8697789
+      },
+      {
+        "label": "Fault injected",
+        "time": 1776959878.8787441
+      },
+      {
+        "label": "SLO violation",
+        "time": 1776959883.8827698
+      },
+      {
+        "label": "RCA started",
+        "time": 1776959914.466958
+      },
+      {
+        "label": "RCA completed",
+        "time": 1776959915.8241332
+      },
+      {
+        "label": "Recovery complete",
+        "time": 1776959973.30862
+      }
+    ]
+  },
+  "rankedServices": [
+    {
+      "service": "checkoutservice",
+      "rank": 1,
+      "confidence": 0.868,
+      "onsetOffsetSeconds": 1,
+      "abnormalMetrics": [
+        "mem_wss"
+      ],
+      "note": "Earliest detected abnormal onset in this run."
+    },
+    {
+      "service": "productcatalogservice",
+      "rank": 2,
+      "confidence": 0.998,
+      "onsetOffsetSeconds": 1,
+      "abnormalMetrics": [
+        "mem_wss"
+      ],
+      "note": "High confidence anomaly; ranked after the first suspect."
+    },
+    {
+      "service": "redis-cart",
+      "rank": 3,
+      "confidence": 0.347,
+      "onsetOffsetSeconds": 1,
+      "abnormalMetrics": [
+        "mem_wss"
+      ],
+      "note": "Lower confidence anomaly on the cart storage dependency."
+    }
+  ],
+  "services": [
+    {
+      "name": "frontend",
+      "group": "entry",
+      "calls": [
+        "productcatalogservice",
+        "currencyservice",
+        "cartservice",
+        "recommendationservice",
+        "shippingservice",
+        "checkoutservice",
+        "adservice"
+      ]
+    },
+    {
+      "name": "checkoutservice",
+      "group": "checkout",
+      "calls": [
+        "productcatalogservice",
+        "shippingservice",
+        "paymentservice",
+        "emailservice",
+        "currencyservice",
+        "cartservice"
+      ]
+    },
+    {
+      "name": "recommendationservice",
+      "group": "browse",
+      "calls": [
+        "productcatalogservice"
+      ]
+    },
+    {
+      "name": "cartservice",
+      "group": "cart",
+      "calls": [
+        "redis-cart"
+      ]
+    },
+    {
+      "name": "productcatalogservice",
+      "group": "browse",
+      "calls": []
+    },
+    {
+      "name": "currencyservice",
+      "group": "checkout",
+      "calls": []
+    },
+    {
+      "name": "paymentservice",
+      "group": "checkout",
+      "calls": []
+    },
+    {
+      "name": "shippingservice",
+      "group": "checkout",
+      "calls": []
+    },
+    {
+      "name": "emailservice",
+      "group": "checkout",
+      "calls": []
+    },
+    {
+      "name": "adservice",
+      "group": "browse",
+      "calls": []
+    },
+    {
+      "name": "redis-cart",
+      "group": "cart",
+      "calls": []
+    }
+  ],
+  "metricSeries": [
+    {
+      "service": "cartservice",
+      "metric": "cpu_rate",
+      "values": [
+        0.08,
+        0.09,
+        0.09,
+        0.11,
+        0.1,
+        0.12,
+        0.54,
+        0.76,
+        0.87,
+        0.91,
+        0.86,
+        0.82,
+        0.74,
+        0.42,
+        0.18,
+        0.11
+      ]
+    },
+    {
+      "service": "checkoutservice",
+      "metric": "mem_wss",
+      "values": [
+        0.04,
+        0.05,
+        0.05,
+        0.06,
+        0.05,
+        0.07,
+        0.22,
+        0.41,
+        0.57,
+        0.71,
+        0.83,
+        0.9,
+        0.86,
+        0.63,
+        0.3,
+        0.14
+      ]
+    },
+    {
+      "service": "productcatalogservice",
+      "metric": "mem_wss",
+      "values": [
+        0.03,
+        0.04,
+        0.05,
+        0.05,
+        0.06,
+        0.08,
+        0.25,
+        0.48,
+        0.68,
+        0.82,
+        0.91,
+        0.95,
+        0.84,
+        0.58,
+        0.26,
+        0.1
+      ]
+    },
+    {
+      "service": "redis-cart",
+      "metric": "mem_wss",
+      "values": [
+        0.02,
+        0.03,
+        0.04,
+        0.03,
+        0.05,
+        0.04,
+        0.15,
+        0.23,
+        0.35,
+        0.43,
+        0.47,
+        0.44,
+        0.38,
+        0.25,
+        0.12,
+        0.06
+      ]
+    }
+  ],
+  "pipeline": [
+    {
+      "name": "Change point detection",
+      "detail": "CUSUM plus bootstrap thresholds finds candidate metric shifts."
+    },
+    {
+      "name": "Normal-model filter",
+      "detail": "Markov checkpoints compare the fault window against learned baseline behavior."
+    },
+    {
+      "name": "Burst filter",
+      "detail": "FFT predictability filtering removes expected workload bursts."
+    },
+    {
+      "name": "Onset rollback",
+      "detail": "Tangent rollback estimates when the abnormal trend actually began."
+    },
+    {
+      "name": "Dependency ranking",
+      "detail": "Service onsets are sorted and filtered through the Online Boutique call graph."
+    }
+  ]
+}
