@@ -33,15 +33,27 @@ function pathFromPoints(points) {
 function renderHeroChart(data) {
   const svg = $("#hero-chart");
   const width = 620;
-  const height = 260;
+  const height = 280;
+  const padX = 32;
+  const chartTop = 50;
+  const chartBottom = height - 32;
   const values = [26, 28, 29, 31, 30, 34, 48, 58, 63, 57, 52, 44, 39, 34, 31, 29];
-  const pts = pointsFor(values, width, height, 28);
   const max = Math.max(...values, data.run.sloThresholdMs);
   const min = Math.min(...values, data.run.baselineP95Ms);
   const span = Math.max(max - min, 0.001);
-  const thresholdY = height - 28 - ((data.run.sloThresholdMs - min) / span) * (height - 56);
+  const chartHeight = chartBottom - chartTop;
+  const pts = values.map((value, index) => {
+    const x = padX + (index / (values.length - 1)) * (width - padX * 2);
+    const y = chartBottom - ((value - min) / span) * chartHeight;
+    return [x, y];
+  });
+  const thresholdY = chartBottom - ((data.run.sloThresholdMs - min) / span) * chartHeight;
+  const thresholdLabelY = Math.max(24, thresholdY - 28);
+  const violationPoint = pts[6];
+  const violationLabelX = Math.min(width - 132, violationPoint[0] + 28);
+  const violationLabelY = Math.max(24, violationPoint[1] - 42);
   const line = pathFromPoints(pts);
-  const area = `${line} L ${width - 28} ${height - 28} L 28 ${height - 28} Z`;
+  const area = `${line} L ${width - padX} ${chartBottom} L ${padX} ${chartBottom} Z`;
 
   svg.innerHTML = `
     <defs>
@@ -51,11 +63,14 @@ function renderHeroChart(data) {
       </linearGradient>
     </defs>
     <path d="${area}" fill="url(#areaFill)"></path>
-    <line x1="28" y1="${thresholdY}" x2="${width - 28}" y2="${thresholdY}" stroke="#f2c66d" stroke-width="2" stroke-dasharray="8 8"></line>
-    <text x="34" y="${thresholdY - 10}" fill="#f2c66d" font-size="13" font-weight="800">SLO threshold</text>
+    <line x1="${padX}" y1="${thresholdY}" x2="${width - padX}" y2="${thresholdY}" stroke="#f2c66d" stroke-width="2" stroke-dasharray="8 8"></line>
+    <rect x="${width - 166}" y="${thresholdLabelY - 18}" width="138" height="28" rx="14" fill="#1d3028" stroke="#f2c66d" stroke-width="1"></rect>
+    <text x="${width - 152}" y="${thresholdLabelY}" fill="#f2c66d" font-size="13" font-weight="800">SLO threshold</text>
     <path d="${line}" fill="none" stroke="#9ee3bd" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>
-    <circle cx="${pts[6][0]}" cy="${pts[6][1]}" r="7" fill="#f08b70"></circle>
-    <text x="${pts[6][0] + 12}" y="${pts[6][1] - 12}" fill="#f6f4ed" font-size="13" font-weight="800">violation</text>
+    <line x1="${violationPoint[0] + 5}" y1="${violationPoint[1] - 6}" x2="${violationLabelX + 12}" y2="${violationLabelY + 8}" stroke="#f08b70" stroke-width="2"></line>
+    <circle cx="${violationPoint[0]}" cy="${violationPoint[1]}" r="7" fill="#f08b70"></circle>
+    <rect x="${violationLabelX}" y="${violationLabelY - 18}" width="92" height="28" rx="14" fill="#2a231f" stroke="#f08b70" stroke-width="1"></rect>
+    <text x="${violationLabelX + 14}" y="${violationLabelY}" fill="#f6f4ed" font-size="13" font-weight="800">violation</text>
   `;
 }
 
