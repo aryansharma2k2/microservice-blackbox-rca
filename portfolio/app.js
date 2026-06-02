@@ -35,7 +35,7 @@ function renderHeroChart(data) {
   const width = 620;
   const height = 280;
   const padX = 32;
-  const chartTop = 50;
+  const chartTop = 82;
   const chartBottom = height - 32;
   const values = [26, 28, 29, 31, 30, 34, 48, 58, 63, 57, 52, 44, 39, 34, 31, 29];
   const max = Math.max(...values, data.run.sloThresholdMs);
@@ -48,10 +48,7 @@ function renderHeroChart(data) {
     return [x, y];
   });
   const thresholdY = chartBottom - ((data.run.sloThresholdMs - min) / span) * chartHeight;
-  const thresholdLabelY = Math.max(24, thresholdY - 28);
   const violationPoint = pts[6];
-  const violationLabelX = Math.min(width - 132, violationPoint[0] + 28);
-  const violationLabelY = Math.max(24, violationPoint[1] - 42);
   const line = pathFromPoints(pts);
   const area = `${line} L ${width - padX} ${chartBottom} L ${padX} ${chartBottom} Z`;
 
@@ -62,15 +59,17 @@ function renderHeroChart(data) {
         <stop offset="100%" stop-color="#78c8a2" stop-opacity="0"></stop>
       </linearGradient>
     </defs>
+    <rect x="32" y="22" width="138" height="30" rx="15" fill="#1d3028" stroke="#f2c66d" stroke-width="1"></rect>
+    <line x1="48" y1="37" x2="70" y2="37" stroke="#f2c66d" stroke-width="2" stroke-dasharray="6 5"></line>
+    <text x="82" y="42" fill="#f2c66d" font-size="13" font-weight="800">SLO threshold</text>
+    <rect x="188" y="22" width="122" height="30" rx="15" fill="#2a231f" stroke="#f08b70" stroke-width="1"></rect>
+    <circle cx="206" cy="37" r="6" fill="#f08b70"></circle>
+    <text x="220" y="42" fill="#f6f4ed" font-size="13" font-weight="800">violation</text>
     <path d="${area}" fill="url(#areaFill)"></path>
     <line x1="${padX}" y1="${thresholdY}" x2="${width - padX}" y2="${thresholdY}" stroke="#f2c66d" stroke-width="2" stroke-dasharray="8 8"></line>
-    <rect x="${width - 166}" y="${thresholdLabelY - 18}" width="138" height="28" rx="14" fill="#1d3028" stroke="#f2c66d" stroke-width="1"></rect>
-    <text x="${width - 152}" y="${thresholdLabelY}" fill="#f2c66d" font-size="13" font-weight="800">SLO threshold</text>
     <path d="${line}" fill="none" stroke="#9ee3bd" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>
-    <line x1="${violationPoint[0] + 5}" y1="${violationPoint[1] - 6}" x2="${violationLabelX + 12}" y2="${violationLabelY + 8}" stroke="#f08b70" stroke-width="2"></line>
+    <line x1="${violationPoint[0]}" y1="${chartTop}" x2="${violationPoint[0]}" y2="${chartBottom}" stroke="#f08b70" stroke-width="1.5" stroke-dasharray="5 8" opacity="0.85"></line>
     <circle cx="${violationPoint[0]}" cy="${violationPoint[1]}" r="7" fill="#f08b70"></circle>
-    <rect x="${violationLabelX}" y="${violationLabelY - 18}" width="92" height="28" rx="14" fill="#2a231f" stroke="#f08b70" stroke-width="1"></rect>
-    <text x="${violationLabelX + 14}" y="${violationLabelY}" fill="#f6f4ed" font-size="13" font-weight="800">violation</text>
   `;
 }
 
@@ -135,6 +134,8 @@ function nodeClass(name, data) {
 
 function renderGraph(data) {
   const svg = $("#dependency-graph");
+  const nodeWidth = 196;
+  const nodeHeight = 62;
   const positions = {
     frontend: [80, 250],
     productcatalogservice: [330, 70],
@@ -148,21 +149,41 @@ function renderGraph(data) {
     paymentservice: [595, 395],
     emailservice: [595, 500]
   };
+  const displayNames = {
+    productcatalogservice: ["product catalog", "service"],
+    recommendationservice: ["recommendation", "service"],
+    checkoutservice: ["checkout", "service"],
+    currencyservice: ["currency", "service"],
+    paymentservice: ["payment", "service"],
+    shippingservice: ["shipping", "service"],
+    emailservice: ["email", "service"],
+    cartservice: ["cart", "service"],
+    adservice: ["ad", "service"],
+    frontend: ["frontend"],
+    "redis-cart": ["redis-cart"]
+  };
   const serviceByName = Object.fromEntries(data.services.map((service) => [service.name, service]));
   const edges = data.services.flatMap((service) => service.calls.map((target) => [service.name, target]));
   const edgeMarkup = edges.map(([source, target]) => {
     const [x1, y1] = positions[source];
     const [x2, y2] = positions[target];
     const mid = Math.max(24, (x2 - x1) / 2);
-    return `<path class="edge" d="M ${x1 + 170} ${y1 + 24} C ${x1 + 170 + mid} ${y1 + 24}, ${x2 - mid} ${y2 + 24}, ${x2} ${y2 + 24}"></path>`;
+    const sourceY = y1 + nodeHeight / 2;
+    const targetY = y2 + nodeHeight / 2;
+    return `<path class="edge" d="M ${x1 + nodeWidth} ${sourceY} C ${x1 + nodeWidth + mid} ${sourceY}, ${x2 - mid} ${targetY}, ${x2} ${targetY}"></path>`;
   }).join("");
   const nodeMarkup = Object.entries(positions).map(([name, [x, y]]) => {
     const group = serviceByName[name]?.group || "service";
+    const lines = displayNames[name] || [name];
+    const lineMarkup = lines.map((line, index) => (
+      `<tspan x="16" dy="${index === 0 ? 0 : 16}">${line}</tspan>`
+    )).join("");
+    const labelY = lines.length > 1 ? 22 : 30;
     return `
       <g class="node ${nodeClass(name, data)}" transform="translate(${x} ${y})">
-        <rect width="170" height="48" rx="8"></rect>
-        <text x="14" y="21">${name}</text>
-        <text x="14" y="37" fill="#5c6a63" font-size="11" font-weight="700">${group}</text>
+        <rect width="${nodeWidth}" height="${nodeHeight}" rx="8"></rect>
+        <text class="node-name" y="${labelY}">${lineMarkup}</text>
+        <text class="node-group" x="16" y="${nodeHeight - 12}">${group}</text>
       </g>
     `;
   }).join("");

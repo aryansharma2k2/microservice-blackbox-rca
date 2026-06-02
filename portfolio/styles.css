@@ -361,7 +361,7 @@ h2 {
 
 #dependency-graph {
   display: block;
-  min-width: 860px;
+  min-width: 900px;
   width: 100%;
   height: auto;
 }
@@ -436,10 +436,18 @@ code {
   stroke-width: 2;
 }
 
-.node text {
+.node-name {
   fill: var(--ink);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
+  text-transform: uppercase;
+}
+
+.node-group {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 .node.target rect {
