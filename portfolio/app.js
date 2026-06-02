@@ -59,12 +59,11 @@ function renderHeroChart(data) {
         <stop offset="100%" stop-color="#78c8a2" stop-opacity="0"></stop>
       </linearGradient>
     </defs>
-    <rect x="32" y="22" width="190" height="30" rx="15" fill="#1d3028" stroke="#f2c66d" stroke-width="1"></rect>
-    <line x1="48" y1="37" x2="70" y2="37" stroke="#f2c66d" stroke-width="2" stroke-dasharray="6 5"></line>
-    <text x="84" y="42" fill="#f2c66d" font-size="12" font-weight="800">SLO THRESHOLD</text>
-    <rect x="238" y="22" width="118" height="30" rx="15" fill="#2a231f" stroke="#f08b70" stroke-width="1"></rect>
-    <circle cx="256" cy="37" r="6" fill="#f08b70"></circle>
-    <text x="270" y="42" fill="#f6f4ed" font-size="12" font-weight="800">VIOLATION</text>
+    <rect x="32" y="20" width="360" height="34" rx="17" fill="#172820" stroke="#3e5549" stroke-width="1"></rect>
+    <line x1="52" y1="37" x2="82" y2="37" stroke="#f2c66d" stroke-width="2.5" stroke-dasharray="7 6"></line>
+    <text x="96" y="42" fill="#f2c66d" font-size="12" font-weight="800">SLO threshold</text>
+    <circle cx="236" cy="37" r="6" fill="#f08b70"></circle>
+    <text x="252" y="42" fill="#f6f4ed" font-size="12" font-weight="800">Violation</text>
     <path d="${area}" fill="url(#areaFill)"></path>
     <line x1="${padX}" y1="${thresholdY}" x2="${width - padX}" y2="${thresholdY}" stroke="#f2c66d" stroke-width="2" stroke-dasharray="8 8"></line>
     <path d="${line}" fill="none" stroke="#9ee3bd" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>
