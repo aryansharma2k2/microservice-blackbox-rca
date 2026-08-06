@@ -208,7 +208,7 @@ function renderPipeline(data) {
 }
 
 function hydrateStats(data) {
-  $("#stat-fault").textContent = `${data.run.fault} on ${data.run.targetService}`;
+  $("#stat-fault").textContent = data.run.fault;
   $("#stat-latency").textContent = fmtSeconds(data.run.diagnosisLatencySeconds);
   $("#stat-runtime").textContent = fmtSeconds(data.run.rcaRuntimeSeconds);
   $("#slo-threshold").textContent = `${fmtMs(data.run.baselineP95Ms)} baseline / ${fmtMs(data.run.sloThresholdMs)} SLO`;
