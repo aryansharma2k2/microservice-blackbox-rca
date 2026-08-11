@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+    # Only redeploy when the published site itself changes. Without this every
+    # unrelated commit to main triggers a pointless rebuild of an identical page.
+    paths:
+      - 'portfolio/**'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
