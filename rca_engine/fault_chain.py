@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -77,6 +78,68 @@ STEP_SECONDS: float = 1.0
 
 
 # ---------------------------------------------------------------------------
+# Verdicts — how to read the ranked list
+# ---------------------------------------------------------------------------
+#
+# The ranked list alone is ambiguous: "arrival_load ranked first" could mean
+# the system is overloaded, or that a load metric happened to twitch first.
+# The verdict says which reading applies, and it changes the remediation.
+
+#: Nothing crossed a change-point threshold.
+VERDICT_NO_ANOMALY = "no_anomaly"
+
+#: An internal component moved first — something in the system is misbehaving.
+#: This is the actionable case: `ranked` names what to fix.
+VERDICT_PATHOLOGY = "pathology"
+
+#: An exogenous input (arrival rate, prompt shape) moved before anything
+#: internal did.  The system is being asked for more than it can deliver;
+#: nothing inside it is broken.  Remediation is capacity or admission control,
+#: not a bug fix.
+VERDICT_CAPACITY = "capacity"
+
+#: Every monitored component went abnormal together with one uniform trend.
+#: Classic FChain external cause — a shared-infrastructure event or a workload
+#: shift that no single component explains.
+VERDICT_EXTERNAL = "external"
+
+
+@dataclass
+class RcaReport:
+    """Structured result of one diagnosis.
+
+    ``pinpoint()`` returns just ``ranked`` for backwards compatibility; this
+    is the full object, and the evidence bundle the explainer stage consumes.
+    """
+
+    verdict: str
+    ranked: list[dict[str, Any]]
+    #: Abnormal exogenous components ordered by onset — the drivers behind a
+    #: ``capacity`` verdict. Empty for domains that declare no exogenous nodes.
+    exogenous_drivers: list[str]
+    domain: str
+
+    def top(self) -> dict[str, Any] | None:
+        """Highest-ranked component, or None when nothing was abnormal."""
+        return self.ranked[0] if self.ranked else None
+
+
+def _classify(
+    sorted_components: list[str],
+    exogenous: frozenset[str],
+    pinpointed: list[str],
+) -> str:
+    """Decide how the ranked list should be read."""
+    if not sorted_components:
+        return VERDICT_NO_ANOMALY
+    if exogenous and sorted_components[0] in exogenous:
+        return VERDICT_CAPACITY
+    if not pinpointed:
+        return VERDICT_EXTERNAL
+    return VERDICT_PATHOLOGY
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -91,6 +154,34 @@ def pinpoint(
     domain: DomainSpec | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full FChain RCA pipeline and return a ranked suspect list.
+
+    Thin wrapper over :func:`pinpoint_report` that returns only the ranking.
+    Use ``pinpoint_report`` when you also need the verdict — for a domain with
+    exogenous nodes the ranking alone is ambiguous.
+    """
+    return pinpoint_report(
+        metric_matrix=metric_matrix,
+        baseline_window=baseline_window,
+        fault_window=fault_window,
+        step_seconds=step_seconds,
+        propagation_map_path=propagation_map_path,
+        start_time=start_time,
+        logs=logs,
+        domain=domain,
+    ).ranked
+
+
+def pinpoint_report(
+    metric_matrix: dict[str, dict[str, np.ndarray]],
+    baseline_window: tuple[float, float],
+    fault_window: tuple[float, float],
+    step_seconds: float = 1.0,
+    propagation_map_path: str | None = None,
+    start_time: float | None = None,
+    logs: list[dict] | None = None,
+    domain: DomainSpec | None = None,
+) -> RcaReport:
+    """Run the full FChain RCA pipeline and return a structured report.
 
     For each service in *metric_matrix*, every metric is analysed through
     Layers 1-5 (Section II-B) to produce a rollback-refined onset timestamp.
@@ -132,14 +223,20 @@ def pinpoint(
 
     Returns
     -------
-    list[dict]
-        One entry per abnormal service, ordered by FChain Section II-C
-        ranking: root causes first (by onset time), then propagation victims
-        (by onset time).  Each dict contains:
+    RcaReport
+        ``verdict``           one of the ``VERDICT_*`` constants
+        ``ranked``            one entry per abnormal component, ordered by
+                              FChain Section II-C ranking: root causes first
+                              (by onset time), then propagation victims
+        ``exogenous_drivers`` abnormal exogenous components, by onset
+        ``domain``            name of the domain that was analysed
 
-        ``service``          service name
+        Each ``ranked`` entry contains:
+
+        ``service``          component name
         ``onset_time``       POSIX timestamp of the earliest detected onset
-        ``confidence``       fraction of monitored metrics that were abnormal
+        ``confidence``       mean per-metric confidence, else the fraction of
+                             the component's metrics that were abnormal
         ``abnormal_metrics`` sorted list of metrics that showed abnormality
         ``rank``             1-based position in the output list
     """
@@ -149,13 +246,19 @@ def pinpoint(
     if logs is None:
         logs = []
     spec = domain or DEFAULT_DOMAIN
-    
+    empty = RcaReport(
+        verdict=VERDICT_NO_ANOMALY,
+        ranked=[],
+        exogenous_drivers=[],
+        domain=spec.name,
+    )
+
     # Log the START_PINPOINT stage
     stage_start = time.time()
     log_stage("START_PINPOINT", __file__, start_time, stage_start, logs)
 
     if not metric_matrix:
-        return []
+        return empty
 
     bl_start, bl_end = baseline_window
     ft_start, ft_end = fault_window
@@ -238,12 +341,13 @@ def pinpoint(
             service_metric_confidences[service] = metric_confs
 
     if not service_onsets:
-        return []
+        return empty
 
     # ------------------------------------------------------------------
     # Layers 6-8: integrated fault diagnosis (FChain Section II-C)
     # ------------------------------------------------------------------
     dep_graph = spec.graph()
+    excluded = spec.excluded_from_root_cause()
 
     # Load per-edge propagation map if a path was provided and the file exists.
     prop_map = None
@@ -264,6 +368,7 @@ def pinpoint(
         n_monitored_services=n_monitored_services,
         concurrency_threshold_s=spec.concurrency_threshold_s,
         propagation_map=prop_map,
+        excluded=excluded,
     )
 
     pinpointed_set = set(pinpointed)
@@ -302,19 +407,37 @@ def pinpoint(
         entry["rank"] = i
         ranked_results.append(entry)
 
+    # Sorted purely by onset, ignoring the pinpointed/victim grouping, so the
+    # verdict reflects what genuinely moved first.
+    by_onset = sorted(service_onsets, key=lambda s: service_onsets[s])
+    verdict = _classify(by_onset, spec.exogenous, pinpointed)
+    exogenous_drivers = [svc for svc in by_onset if svc in spec.exogenous]
+
     if ranked_results:
         logger.info(
-            "FChain RCA: finished ranking %d services, top=%s confidence=%.3f",
+            "FChain RCA: verdict=%s, ranked %d components, top=%s confidence=%.3f",
+            verdict,
             len(ranked_results),
             ranked_results[0].get("service", ""),
             ranked_results[0].get("confidence", 0.0),
+        )
+    if verdict == VERDICT_CAPACITY:
+        logger.info(
+            "Capacity verdict — exogenous input %s moved before any internal "
+            "component; the system is being asked for more than it can serve",
+            exogenous_drivers[0] if exogenous_drivers else "?",
         )
 
     # Log the FINAL_RANKING stage
     stage_start = time.time()
     log_stage("FINAL_RANKING", __file__, start_time, stage_start, logs)
 
-    return ranked_results
+    return RcaReport(
+        verdict=verdict,
+        ranked=ranked_results,
+        exogenous_drivers=exogenous_drivers,
+        domain=spec.name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +451,7 @@ def pinpoint_faults(
     n_monitored_services: int = 0,
     concurrency_threshold_s: float = 2.0,
     propagation_map: "PropagationMap | None" = None,
+    excluded: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Identify faulty services using the FChain Section II-C algorithm.
 
@@ -393,6 +517,17 @@ def pinpoint_faults(
 
         When the map is None the original FChain behaviour is preserved
         exactly (flat global threshold + early break).
+    excluded :
+        Components that may go abnormal but can never *be* the root cause —
+        exogenous inputs (arrival rate, prompt shape) and the SLI node being
+        explained.  See ``DomainSpec.excluded_from_root_cause``.
+
+        Supplying a non-empty set also disables the uniform-trend external
+        cause check below.  That check assumes every component moving
+        together means "not one component's fault", which is right for
+        microservices but wrong for a mechanism graph, where a load spike
+        legitimately drives most nodes up at once.  Declaring exogenous nodes
+        expresses the same idea far more precisely, so it takes over.
 
     Returns
     -------
@@ -412,7 +547,9 @@ def pinpoint_faults(
     # trend suggests a workload spike; uniform downward suggests a shared
     # resource collapse (e.g. NFS).  In either case no single service is
     # at fault, so we return early.
-    if n_monitored_services > 0:
+    #
+    # Skipped when the domain declares exclusions — see the `excluded` docs.
+    if n_monitored_services > 0 and not excluded:
         unique_trends = set(service_trends.values()) - {"mixed"}
         all_services_abnormal = len(sorted_svcs) >= n_monitored_services
         if len(unique_trends) == 1 and all_services_abnormal:
@@ -424,13 +561,23 @@ def pinpoint_faults(
             )
             return []
 
+    # Root-cause candidates exclude exogenous inputs and the SLI node.  They
+    # keep their place in the ranked evidence; they just cannot win.
+    candidates = [svc for svc in sorted_svcs if svc not in excluded]
+    if not candidates:
+        logger.info(
+            "Every abnormal component is exogenous or the SLI itself — "
+            "no internal root cause to pinpoint"
+        )
+        return []
+
     # Layer 7 — primary root cause is the earliest-onset service.
     # Any service that started within the concurrency window is also
     # pinpointed as an independent concurrent fault rather than a victim.
-    pinpointed: list[str] = [sorted_svcs[0]]
-    first_onset = service_onsets[sorted_svcs[0]]
+    pinpointed: list[str] = [candidates[0]]
+    first_onset = service_onsets[candidates[0]]
 
-    for svc in sorted_svcs[1:]:
+    for svc in candidates[1:]:
         onset_diff = service_onsets[svc] - first_onset
 
         if propagation_map is not None:
@@ -471,7 +618,7 @@ def pinpoint_faults(
     # its abnormality is reachable from any already-pinpointed root cause
     # via forward propagation or back-pressure.  If not, it is an
     # independent fault and is added to the pinpointed set.
-    for svc in sorted_svcs:
+    for svc in candidates:
         if svc in pinpointed:
             continue
 

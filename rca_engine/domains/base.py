@@ -31,8 +31,11 @@ incident.  Marking those nodes exogenous lets Layer 6 separate *capacity*
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -158,6 +161,64 @@ class DomainSpec:
 
     def is_exogenous(self, component: str) -> bool:
         return component in self.exogenous
+
+    def excluded_from_root_cause(self) -> frozenset[str]:
+        """Components that may go abnormal but can never *be* the root cause.
+
+        Two kinds, excluded for different reasons:
+
+        * **Exogenous inputs** — arrival rate, prompt shape.  Real, and often
+          the earliest thing to move, but not something inside the system that
+          broke.  "Requests got longer" is a workload change, not a defect.
+        * **The SLI node** — TTFT is the symptom being explained.  It goes
+          abnormal in every single incident by construction, so letting it win
+          the earliest-onset race would make every diagnosis read "TTFT is
+          slow because TTFT is slow".
+
+        A third kind is derived rather than declared:
+
+        * **Components with no causal path to the SLI.**  If a node cannot
+          reach the signal being explained, it cannot explain a regression in
+          it.  vLLM's ``decode_health`` (inter-token latency) is the example:
+          a genuine co-symptom, useful evidence about batch behaviour, but
+          naming it the cause of a *first-token* latency spike would be
+          symptom-explaining-symptom.
+
+        Only applies when ``sli_node`` is set, so domains without an explicit
+        SLI (Boutique) are unaffected.  Exclusions of this third kind are
+        logged, because one can equally mean a missing edge in the graph.
+
+        All three still appear in the ranked output as evidence; they are only
+        barred from being *pinpointed* as the cause.
+        """
+        excluded = set(self.exogenous)
+        if self.sli_node is None:
+            return frozenset(excluded)
+
+        excluded.add(self.sli_node)
+
+        # Imported here rather than at module scope to keep the graph helpers
+        # out of the import path for callers that only need the dataclasses.
+        from rca_engine.dependency import has_path
+
+        unreachable = [
+            node
+            for node in self.component_graph
+            if node not in excluded
+            and not has_path(self.component_graph, node, self.sli_node)
+        ]
+        if unreachable:
+            logger.info(
+                "Domain '%s': %s cannot reach the SLI node '%s', so cannot be "
+                "named a root cause. If that is wrong, the graph is missing an "
+                "edge.",
+                self.name,
+                ", ".join(sorted(unreachable)),
+                self.sli_node,
+            )
+            excluded.update(unreachable)
+
+        return frozenset(excluded)
 
     def validate(self) -> list[str]:
         """Return a list of internal inconsistencies; empty means healthy.

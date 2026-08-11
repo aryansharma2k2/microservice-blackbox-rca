@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from rca_engine.domains import (
+    VLLM,
     BOUTIQUE,
     DEFAULT_DOMAIN,
     DomainSpec,
@@ -18,7 +19,8 @@ from rca_engine.domains import (
     histogram_quantile,
     register_domain,
 )
-from rca_engine.fault_chain import STEP_SECONDS, pinpoint
+from rca_engine import fault_chain
+from rca_engine.fault_chain import STEP_SECONDS, pinpoint, pinpoint_report
 
 
 # -----------------------------------------------------------------------
@@ -154,8 +156,6 @@ def _toy_domain(**overrides) -> DomainSpec:
             "quiet": [],
         },
         component_metrics={c: ("signal_a", "signal_b") for c in _TOY_COMPONENTS},
-        exogenous=frozenset({"root"}),
-        sli_node="victim",
     )
     base.update(overrides)
     return DomainSpec(**base)
@@ -250,3 +250,264 @@ class TestPinpointHonoursDomain:
         bl, ft = self._windows()
         matrix = self._matrix()
         assert pinpoint(matrix, bl, ft) == pinpoint(matrix, bl, ft, domain=BOUTIQUE)
+
+
+# -----------------------------------------------------------------------
+# Exogenous inputs, the SLI node, and the verdict
+# -----------------------------------------------------------------------
+
+_MECH_COMPONENTS = ("load", "cache", "queueing", "latency", "quiet")
+
+
+def _mechanism_domain(**overrides) -> DomainSpec:
+    """A miniature mechanism graph shaped like the vLLM one.
+
+        load ──> cache ──> queueing ──> latency          quiet
+
+    ``load`` is exogenous (an input, not a defect) and ``latency`` is the SLI
+    being explained.  Neither may be named the root cause.
+    """
+    base = dict(
+        name="mech",
+        metrics={
+            "signal_a": MetricQuery("a", component="load"),
+            "signal_b": MetricQuery("b", component="load"),
+        },
+        component_graph={
+            "load": ["cache"],
+            "cache": ["queueing"],
+            "queueing": ["latency"],
+            "latency": [],
+            "quiet": [],
+        },
+        component_metrics={c: ("signal_a", "signal_b") for c in _MECH_COMPONENTS},
+        exogenous=frozenset({"load"}),
+        sli_node="latency",
+    )
+    base.update(overrides)
+    return DomainSpec(**base)
+
+
+class TestExogenousAndVerdict:
+
+    N_BL, N_FT = 20, 80
+
+    def _windows(self):
+        bl_start = 1000.0
+        bl_end = bl_start + self.N_BL * STEP_SECONDS
+        ft_start = bl_end + 10.0
+        ft_end = ft_start + self.N_FT * STEP_SECONDS
+        return (bl_start, bl_end), (ft_start, ft_end)
+
+    def _run(self, offsets: dict[str, int | None], **domain_kw):
+        """Build a matrix from per-component step offsets and diagnose it."""
+        matrix = {
+            name: (
+                _flat(self.N_BL + self.N_FT)
+                if off is None
+                else _stepped(self.N_BL, self.N_FT, off)
+            )
+            for name, off in offsets.items()
+        }
+        bl, ft = self._windows()
+        return pinpoint_report(matrix, bl, ft, domain=_mechanism_domain(**domain_kw))
+
+    def test_load_driven_incident_is_capacity_not_pathology(self):
+        """Load moves first, everything else follows -> capacity."""
+        report = self._run(
+            {"load": 2, "cache": 20, "queueing": 40, "latency": 45, "quiet": None}
+        )
+        assert report.verdict == fault_chain.VERDICT_CAPACITY
+        assert report.exogenous_drivers == ["load"]
+
+    def test_capacity_verdict_never_names_the_input_as_root_cause(self):
+        """`load` is real evidence but is not something to go fix."""
+        report = self._run(
+            {"load": 2, "cache": 20, "queueing": 40, "latency": 45, "quiet": None}
+        )
+        assert report.top() is not None
+        assert report.top()["service"] != "load"
+        # It still appears in the ranking as evidence.
+        assert "load" in [e["service"] for e in report.ranked]
+
+    def test_internal_first_mover_is_pathology(self):
+        """Load stays flat; an internal component moves -> pathology."""
+        report = self._run(
+            {"load": None, "cache": 2, "queueing": 20, "latency": 40, "quiet": None}
+        )
+        assert report.verdict == fault_chain.VERDICT_PATHOLOGY
+        assert report.top()["service"] == "cache"
+        assert report.exogenous_drivers == []
+
+    def test_sli_node_never_wins_even_when_it_moves_first(self):
+        """TTFT is the symptom; 'latency is slow because latency is slow' is
+        not a diagnosis."""
+        report = self._run(
+            {"load": None, "latency": 2, "cache": 20, "queueing": 40, "quiet": None}
+        )
+        assert report.top()["service"] != "latency"
+        assert report.verdict == fault_chain.VERDICT_PATHOLOGY
+
+    def test_only_exogenous_abnormal_pinpoints_nothing_internal(self):
+        report = self._run(
+            {"load": 2, "cache": None, "queueing": None, "latency": None, "quiet": None}
+        )
+        assert report.verdict == fault_chain.VERDICT_CAPACITY
+        assert [e["service"] for e in report.ranked] == ["load"]
+
+    def test_no_anomaly_when_everything_is_flat(self):
+        report = self._run({c: None for c in _MECH_COMPONENTS})
+        assert report.verdict == fault_chain.VERDICT_NO_ANOMALY
+        assert report.ranked == []
+        assert report.top() is None
+
+    def test_uniform_trend_check_is_bypassed_for_mechanism_domains(self):
+        """Every component abnormal and all rising would make the classic
+        external-cause check bail out with nothing. A domain that declares
+        exogenous nodes expresses that idea precisely instead, so it must
+        still produce a ranking."""
+        report = self._run(
+            {"load": 2, "cache": 20, "queueing": 30, "latency": 40, "quiet": 50}
+        )
+        assert report.ranked, "mechanism domain should not bail out empty"
+        assert report.verdict == fault_chain.VERDICT_CAPACITY
+
+    def test_boutique_keeps_the_classic_external_cause_behaviour(self):
+        """Boutique declares no exogenous nodes, so the uniform-trend check
+        must still fire and pinpoint nothing."""
+        n_bl, n_ft = 20, 80
+        matrix = {
+            svc: _stepped(n_bl, n_ft, 2)
+            for svc in ("frontend", "cartservice", "adservice")
+        }
+        bl = (1000.0, 1000.0 + n_bl)
+        ft = (bl[1] + 10.0, bl[1] + 10.0 + n_ft)
+        report = pinpoint_report(matrix, bl, ft, domain=BOUTIQUE)
+        assert report.verdict == fault_chain.VERDICT_EXTERNAL
+
+
+class TestVllmDomain:
+    """The vLLM mechanism graph, on synthetic telemetry.
+
+    These do not prove the pipeline works on a real server — that needs the
+    captured traces from Phase 4. They pin down the graph's structure and show
+    the mechanism is separable in principle.
+    """
+
+    N_BL, N_FT = 20, 80
+
+    def _windows(self):
+        bl_start = 1000.0
+        bl_end = bl_start + self.N_BL * STEP_SECONDS
+        ft_start = bl_end + 10.0
+        ft_end = ft_start + self.N_FT * STEP_SECONDS
+        return (bl_start, bl_end), (ft_start, ft_end)
+
+    def _diagnose(self, onsets: dict[str, int]):
+        """Build a full vLLM metric matrix; components in `onsets` step at the
+        given offset, all others stay flat."""
+        matrix = {}
+        for component in VLLM.component_graph:
+            metrics = VLLM.component_metrics[component]
+            offset = onsets.get(component)
+            if offset is None:
+                series = {m: np.ones(self.N_BL + self.N_FT) * 0.1 for m in metrics}
+            else:
+                stepped = _stepped(self.N_BL, self.N_FT, offset)["signal_a"]
+                series = {m: stepped.copy() for m in metrics}
+            matrix[component] = series
+        bl, ft = self._windows()
+        return pinpoint_report(matrix, bl, ft, domain=VLLM)
+
+    def test_graph_is_acyclic(self):
+        colour: dict[str, int] = {}
+
+        def visit(node: str) -> bool:
+            colour[node] = 1
+            for nxt in VLLM.component_graph.get(node, []):
+                if colour.get(nxt) == 1:
+                    return True
+                if colour.get(nxt) is None and visit(nxt):
+                    return True
+            colour[node] = 2
+            return False
+
+        assert not any(visit(n) for n in VLLM.component_graph if colour.get(n) is None)
+
+    def test_inputs_and_symptom_cannot_be_named_the_cause(self):
+        excluded = VLLM.excluded_from_root_cause()
+        assert {"arrival_load", "prompt_shape", "ttft"} <= excluded
+        # The eight real mechanisms stay eligible.
+        assert "kv_cache_pressure" not in excluded
+        assert "preemption" not in excluded
+        assert "prefix_cache_efficacy" not in excluded
+        assert "host_saturation" not in excluded
+
+    def test_decode_health_is_excluded_as_a_co_symptom(self):
+        """ITL cannot reach TTFT, so it is evidence, not a cause."""
+        assert "decode_health" in VLLM.excluded_from_root_cause()
+
+    def test_ttft_decomposes_into_queue_and_prefill(self):
+        """The split that partitions admission-side from compute-side causes."""
+        assert VLLM.component_graph["queueing"] == ["ttft"]
+        assert VLLM.component_graph["prefill_cost"] == ["ttft"]
+        assert "queue_time_p99" in VLLM.component_metrics["queueing"]
+        assert "prefill_time_p99" in VLLM.component_metrics["prefill_cost"]
+
+    # -- the confounder pair -------------------------------------------
+    #
+    # Both scenarios below produce a growing queue and a TTFT spike. Any rule
+    # of the form "TTFT up and queue up implies KV cache pressure" gets one of
+    # them wrong. Onset ordering plus the mechanism graph separates them.
+
+    def test_kv_cache_pressure_scenario(self):
+        report = self._diagnose(
+            {"kv_cache_pressure": 2, "preemption": 20, "queueing": 30, "ttft": 40}
+        )
+        assert report.verdict == fault_chain.VERDICT_PATHOLOGY
+        assert report.top()["service"] == "kv_cache_pressure"
+
+    def test_host_saturation_scenario_is_not_blamed_on_the_cache(self):
+        """Same surface symptoms, but the KV cache never moves: the API server
+        and tokenizer are starved of CPU while the GPU sits idle."""
+        report = self._diagnose({"host_saturation": 2, "queueing": 20, "ttft": 30})
+        assert report.verdict == fault_chain.VERDICT_PATHOLOGY
+        assert report.top()["service"] == "host_saturation"
+        assert "kv_cache_pressure" not in [e["service"] for e in report.ranked]
+
+    def test_prefix_cache_thrash_scenario(self):
+        report = self._diagnose(
+            {"prefix_cache_efficacy": 2, "prefill_cost": 20, "ttft": 30}
+        )
+        assert report.verdict == fault_chain.VERDICT_PATHOLOGY
+        assert report.top()["service"] == "prefix_cache_efficacy"
+
+    def test_load_spike_is_capacity_not_a_bug(self):
+        report = self._diagnose(
+            {"arrival_load": 2, "kv_cache_pressure": 20, "queueing": 30, "ttft": 40}
+        )
+        assert report.verdict == fault_chain.VERDICT_CAPACITY
+        assert report.exogenous_drivers == ["arrival_load"]
+        # The verdict says "overloaded", and the earliest internal mechanism is
+        # still surfaced so the operator knows which limit was hit first.
+        assert report.top()["service"] != "arrival_load"
+
+
+class TestPinpointReportWrapper:
+
+    def test_pinpoint_returns_the_reports_ranking(self):
+        n_bl, n_ft = 20, 80
+        matrix = {
+            "currencyservice": _stepped(n_bl, n_ft, 2),
+            "adservice": _flat(n_bl + n_ft),
+        }
+        bl = (1000.0, 1000.0 + n_bl)
+        ft = (bl[1] + 10.0, bl[1] + 10.0 + n_ft)
+        assert pinpoint(matrix, bl, ft) == pinpoint_report(matrix, bl, ft).ranked
+
+    def test_report_records_the_domain(self):
+        assert pinpoint_report({}, (0, 1), (2, 3)).domain == "boutique"
+        assert (
+            pinpoint_report({}, (0, 1), (2, 3), domain=_mechanism_domain()).domain
+            == "mech"
+        )

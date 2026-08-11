@@ -32,7 +32,25 @@ import click
 import requests
 
 from rca_engine import fault_chain
+from rca_engine.domains import DEFAULT_DOMAIN, DOMAINS, get_domain
 from rca_engine.metrics_client import PrometheusMetricsClient
+
+
+#: How to read each verdict, in one line, for the human at the terminal.
+_VERDICT_BLURB = {
+    fault_chain.VERDICT_PATHOLOGY: (
+        "pathology — an internal component moved first; the ranking below "
+        "names what to fix"
+    ),
+    fault_chain.VERDICT_CAPACITY: (
+        "capacity — an input moved before anything internal did; the system is "
+        "being asked for more than it can serve, nothing is broken"
+    ),
+    fault_chain.VERDICT_EXTERNAL: (
+        "external — every component moved together; no single one explains it"
+    ),
+    fault_chain.VERDICT_NO_ANOMALY: "no anomaly detected in this window",
+}
 
 
 def _iso(ts: float) -> str:
@@ -93,6 +111,14 @@ def _require_prometheus(url: str) -> None:
     type=click.Path(exists=True, dir_okay=False),
     help="Optional calibrated per-edge propagation delays (Layer 7).",
 )
+@click.option(
+    "--domain",
+    "domain_name",
+    type=click.Choice(sorted(DOMAINS)),
+    default=DEFAULT_DOMAIN.name,
+    show_default=True,
+    help="Which system to diagnose.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON instead of a table.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 def main(
@@ -101,6 +127,7 @@ def main(
     fault_seconds: int,
     step: float,
     propagation_map_path: str | None,
+    domain_name: str,
     as_json: bool,
     verbose: bool,
 ) -> None:
@@ -112,12 +139,13 @@ def main(
     )
 
     _require_prometheus(prometheus_url)
+    spec = get_domain(domain_name)
 
     now = time.time()
     fault_window = (now - fault_seconds, now)
     baseline_window = (fault_window[0] - baseline_seconds, fault_window[0])
 
-    client = PrometheusMetricsClient(prometheus_url)
+    client = PrometheusMetricsClient(prometheus_url, domain=spec)
     # pinpoint() expects arrays aligned to baseline_window[0] and spanning
     # through the end of the fault window, so fetch the whole range at once.
     metric_matrix = client.fetch_metric_matrix(
@@ -126,25 +154,33 @@ def main(
 
     if not metric_matrix:
         raise click.ClickException(
-            f"No metrics returned from {prometheus_url}. "
-            "Is Prometheus running and scraping the cluster?"
+            f"No metrics returned from {prometheus_url} for domain "
+            f"'{domain_name}'. Is Prometheus running and scraping the target? "
+            "Check the metric surface with:\n"
+            f"  python -m rca_engine.scripts.discover_metrics check {domain_name} "
+            "--url <server>/metrics"
         )
 
-    ranked = fault_chain.pinpoint(
+    report = fault_chain.pinpoint_report(
         metric_matrix=metric_matrix,
         baseline_window=baseline_window,
         fault_window=fault_window,
         step_seconds=step,
         propagation_map_path=propagation_map_path,
+        domain=spec,
     )
+    ranked = report.ranked
 
     if as_json:
         click.echo(
             json.dumps(
                 {
+                    "domain": report.domain,
+                    "verdict": report.verdict,
                     "baseline_window": list(baseline_window),
                     "fault_window": list(fault_window),
                     "components_observed": len(metric_matrix),
+                    "exogenous_drivers": report.exogenous_drivers,
                     "ranked": ranked,
                 },
                 indent=2,
@@ -153,16 +189,22 @@ def main(
         return
 
     click.echo(
+        f"\nDomain   : {report.domain}"
         f"\nBaseline : {_iso(baseline_window[0])} → {_iso(baseline_window[1])}"
         f"\nFault    : {_iso(fault_window[0])} → {_iso(fault_window[1])}"
-        f"\nObserved : {len(metric_matrix)} components\n"
+        f"\nObserved : {len(metric_matrix)} components"
+        f"\nVerdict  : {_VERDICT_BLURB.get(report.verdict, report.verdict)}\n"
     )
 
-    if not ranked:
+    if report.exogenous_drivers:
         click.echo(
-            "No root cause pinpointed. Either nothing was abnormal, or every "
-            "component moved together (external cause — e.g. a workload spike)."
+            "Exogenous drivers (inputs, not defects): "
+            + ", ".join(report.exogenous_drivers)
+            + "\n"
         )
+
+    if not ranked:
+        click.echo("Nothing was abnormal in this window.")
         return
 
     click.echo(f"{'RANK':<6}{'COMPONENT':<28}{'ONSET':<12}{'CONF':<8}ABNORMAL METRICS")

@@ -14,10 +14,12 @@ from __future__ import annotations
 
 from rca_engine.domains.base import DomainSpec, MetricQuery, histogram_quantile
 from rca_engine.domains.boutique import BOUTIQUE
+from rca_engine.domains.vllm import VLLM
 
 #: Registry of built-in domains, keyed by ``DomainSpec.name``.
 DOMAINS: dict[str, DomainSpec] = {
     BOUTIQUE.name: BOUTIQUE,
+    VLLM.name: VLLM,
 }
 
 #: Used wherever a domain is not supplied explicitly, preserving the
@@ -54,6 +56,7 @@ def register_domain(spec: DomainSpec) -> DomainSpec:
 
 __all__ = [
     "BOUTIQUE",
+    "VLLM",
     "DEFAULT_DOMAIN",
     "DOMAINS",
     "DomainSpec",

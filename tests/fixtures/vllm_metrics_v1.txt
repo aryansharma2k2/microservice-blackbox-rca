@@ -1,0 +1,106 @@
+# Trimmed excerpt of a vLLM V1 /metrics response, used to test the metric
+# discovery script without a running server. Sample values are illustrative;
+# only the names, types, and label shapes matter here.
+# HELP vllm:num_requests_running Number of requests currently running on GPU.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{model_name="Qwen/Qwen2.5-7B-Instruct"} 12.0
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{model_name="Qwen/Qwen2.5-7B-Instruct"} 3.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{model_name="Qwen/Qwen2.5-7B-Instruct"} 0.87
+# HELP vllm:num_preemptions_total Cumulative number of preemptions.
+# TYPE vllm:num_preemptions_total counter
+vllm:num_preemptions_total{model_name="Qwen/Qwen2.5-7B-Instruct"} 41.0
+# HELP vllm:prompt_tokens_total Number of prefill tokens processed.
+# TYPE vllm:prompt_tokens_total counter
+vllm:prompt_tokens_total{model_name="Qwen/Qwen2.5-7B-Instruct"} 918273.0
+# HELP vllm:generation_tokens_total Number of generation tokens processed.
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{model_name="Qwen/Qwen2.5-7B-Instruct"} 220145.0
+# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{finished_reason="stop",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:prefix_cache_queries_total Prefix cache queries, in terms of blocks.
+# TYPE vllm:prefix_cache_queries_total counter
+vllm:prefix_cache_queries_total{model_name="Qwen/Qwen2.5-7B-Instruct"} 55120.0
+# HELP vllm:prefix_cache_hits_total Prefix cache hits, in terms of blocks.
+# TYPE vllm:prefix_cache_hits_total counter
+vllm:prefix_cache_hits_total{model_name="Qwen/Qwen2.5-7B-Instruct"} 38122.0
+# HELP vllm:time_to_first_token_seconds Histogram of time to first token in seconds.
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{le="0.1",model_name="Qwen/Qwen2.5-7B-Instruct"} 402.0
+vllm:time_to_first_token_seconds_bucket{le="0.5",model_name="Qwen/Qwen2.5-7B-Instruct"} 6120.0
+vllm:time_to_first_token_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+vllm:time_to_first_token_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 1904.2
+vllm:time_to_first_token_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:inter_token_latency_seconds Histogram of inter token latency in seconds.
+# TYPE vllm:inter_token_latency_seconds histogram
+vllm:inter_token_latency_seconds_bucket{le="0.05",model_name="Qwen/Qwen2.5-7B-Instruct"} 190233.0
+vllm:inter_token_latency_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 220145.0
+vllm:inter_token_latency_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 4402.9
+vllm:inter_token_latency_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 220145.0
+# HELP vllm:e2e_request_latency_seconds Histogram of end to end request latency in seconds.
+# TYPE vllm:e2e_request_latency_seconds histogram
+vllm:e2e_request_latency_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+vllm:e2e_request_latency_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 20154.7
+vllm:e2e_request_latency_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:request_queue_time_seconds Histogram of time spent in WAITING phase for request.
+# TYPE vllm:request_queue_time_seconds histogram
+vllm:request_queue_time_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+vllm:request_queue_time_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 1201.4
+vllm:request_queue_time_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:request_prefill_time_seconds Histogram of time spent in PREFILL phase for request.
+# TYPE vllm:request_prefill_time_seconds histogram
+vllm:request_prefill_time_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+vllm:request_prefill_time_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 702.8
+vllm:request_prefill_time_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:request_decode_time_seconds Histogram of time spent in DECODE phase for request.
+# TYPE vllm:request_decode_time_seconds histogram
+vllm:request_decode_time_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+vllm:request_decode_time_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 18251.3
+vllm:request_decode_time_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:request_prompt_tokens Number of prefill tokens processed.
+# TYPE vllm:request_prompt_tokens histogram
+vllm:request_prompt_tokens_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+vllm:request_prompt_tokens_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 918273.0
+vllm:request_prompt_tokens_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:request_generation_tokens Number of generation tokens processed.
+# TYPE vllm:request_generation_tokens histogram
+vllm:request_generation_tokens_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+vllm:request_generation_tokens_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 220145.0
+vllm:request_generation_tokens_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 7781.0
+# HELP vllm:kv_block_lifetime_seconds Histogram of KV block lifetime in seconds.
+# TYPE vllm:kv_block_lifetime_seconds histogram
+vllm:kv_block_lifetime_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 130422.0
+vllm:kv_block_lifetime_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 90233.1
+vllm:kv_block_lifetime_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 130422.0
+# HELP vllm:kv_block_idle_before_evict_seconds Histogram of KV block idle time before eviction.
+# TYPE vllm:kv_block_idle_before_evict_seconds histogram
+vllm:kv_block_idle_before_evict_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 88120.0
+vllm:kv_block_idle_before_evict_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 12044.6
+vllm:kv_block_idle_before_evict_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 88120.0
+# HELP vllm:kv_block_reuse_gap_seconds Histogram of time between reuses of a KV block.
+# TYPE vllm:kv_block_reuse_gap_seconds histogram
+vllm:kv_block_reuse_gap_seconds_bucket{le="+Inf",model_name="Qwen/Qwen2.5-7B-Instruct"} 38122.0
+vllm:kv_block_reuse_gap_seconds_sum{model_name="Qwen/Qwen2.5-7B-Instruct"} 9021.4
+vllm:kv_block_reuse_gap_seconds_count{model_name="Qwen/Qwen2.5-7B-Instruct"} 38122.0
+# HELP vllm:cache_config_info Information of the LLMEngine CacheConfig
+# TYPE vllm:cache_config_info gauge
+vllm:cache_config_info{block_size="16",cache_dtype="auto",gpu_memory_utilization="0.9"} 1.0
+# HELP DCGM_FI_PROF_SM_ACTIVE Ratio of cycles an SM has at least 1 warp assigned.
+# TYPE DCGM_FI_PROF_SM_ACTIVE gauge
+DCGM_FI_PROF_SM_ACTIVE{gpu="0",modelName="NVIDIA L4"} 0.82
+# HELP DCGM_FI_DEV_SM_CLOCK SM clock frequency (in MHz).
+# TYPE DCGM_FI_DEV_SM_CLOCK gauge
+DCGM_FI_DEV_SM_CLOCK{gpu="0",modelName="NVIDIA L4"} 1710.0
+# HELP container_cpu_usage_seconds_total Cumulative cpu time consumed.
+# TYPE container_cpu_usage_seconds_total counter
+container_cpu_usage_seconds_total{container="vllm",namespace="vllm",pod="vllm-0"} 4402.1
+# HELP container_cpu_cfs_throttled_periods_total Number of throttled period intervals.
+# TYPE container_cpu_cfs_throttled_periods_total counter
+container_cpu_cfs_throttled_periods_total{container="vllm",namespace="vllm",pod="vllm-0"} 88.0
+# HELP container_cpu_cfs_periods_total Number of elapsed enforcement period intervals.
+# TYPE container_cpu_cfs_periods_total counter
+container_cpu_cfs_periods_total{container="vllm",namespace="vllm",pod="vllm-0"} 44021.0
