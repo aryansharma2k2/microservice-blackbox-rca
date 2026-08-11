@@ -44,7 +44,8 @@ if TYPE_CHECKING:
 import numpy as np
 
 from rca_engine.change_point import run_layer1
-from rca_engine.dependency import get_dependency_graph, has_path
+from rca_engine.dependency import has_path
+from rca_engine.domains import DEFAULT_DOMAIN, DomainSpec
 from rca_engine.logger import log_stage
 from rca_engine.normal_model import NormalModel
 from rca_engine.markov_checkpoint import select_checkpoint
@@ -65,8 +66,10 @@ _logged_model_selections: set[tuple[str, str]] = set()
 
 logger = logging.getLogger(__name__)
 
-# Number of metric types tracked per service.
-# Used as the denominator when computing fallback per-service confidence.
+# Number of metric types tracked per service in the Online Boutique domain.
+# Retained for backwards compatibility; the denominator now comes from
+# DomainSpec.metric_count(component) so domains whose components carry
+# different numbers of signals score correctly.
 TOTAL_METRICS: int = len(MONITORED_METRICS)
 
 # Default Prometheus scrape step used throughout the pipeline.
@@ -85,6 +88,7 @@ def pinpoint(
     propagation_map_path: str | None = None,
     start_time: float | None = None,
     logs: list[dict] | None = None,
+    domain: DomainSpec | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full FChain RCA pipeline and return a ranked suspect list.
 
@@ -119,6 +123,12 @@ def pinpoint(
         POSIX timestamp when RCA pipeline started. If None, initialized to current time.
     logs :
         List to accumulate timing logs. If None, initialized to empty list.
+    domain :
+        Which system is being diagnosed — supplies the component graph used
+        by Layers 7-8, the Layer 7 concurrency threshold, and the per-component
+        metric count used as the fallback confidence denominator.  Defaults to
+        Online Boutique, so callers written before the domain layer existed
+        behave identically.
 
     Returns
     -------
@@ -138,6 +148,7 @@ def pinpoint(
         start_time = time.time()
     if logs is None:
         logs = []
+    spec = domain or DEFAULT_DOMAIN
     
     # Log the START_PINPOINT stage
     stage_start = time.time()
@@ -232,7 +243,7 @@ def pinpoint(
     # ------------------------------------------------------------------
     # Layers 6-8: integrated fault diagnosis (FChain Section II-C)
     # ------------------------------------------------------------------
-    dep_graph = get_dependency_graph()
+    dep_graph = spec.graph()
 
     # Load per-edge propagation map if a path was provided and the file exists.
     prop_map = None
@@ -251,7 +262,7 @@ def pinpoint(
         service_trends,
         dep_graph,
         n_monitored_services=n_monitored_services,
-        concurrency_threshold_s=2.0,
+        concurrency_threshold_s=spec.concurrency_threshold_s,
         propagation_map=prop_map,
     )
 
@@ -264,14 +275,11 @@ def pinpoint(
     # services are sorted by onset time (earliest first), then by confidence
     # (highest first) when onset times tie.
     def _confidence_for(svc: str) -> float:
-        abnormal_metrics = service_abnormal_metrics.get(svc, [])
-        metric_confidences = service_metric_confidences.get(svc, {})
-        if metric_confidences and abnormal_metrics:
-            return (
-                sum(metric_confidences.get(m, 0.0) for m in abnormal_metrics)
-                / len(abnormal_metrics)
-            )
-        return len(abnormal_metrics) / TOTAL_METRICS
+        return _confidence(
+            service_abnormal_metrics.get(svc, []),
+            service_metric_confidences.get(svc, {}),
+            spec.metric_count(svc),
+        )
 
     def _sort_key(svc: str) -> tuple:
         return (
@@ -289,6 +297,7 @@ def pinpoint(
             service_onsets[svc],
             service_abnormal_metrics[svc],
             metric_confidences=service_metric_confidences.get(svc, {}),
+            total_metrics=spec.metric_count(svc),
         )
         entry["rank"] = i
         ranked_results.append(entry)
@@ -770,25 +779,41 @@ def _determine_trend(directions: list[str]) -> str:
     return "mixed"
 
 
+def _confidence(
+    abnormal_metrics: list[str],
+    metric_confidences: dict[str, float] | None,
+    total_metrics: int,
+) -> float:
+    """Score how strongly one component's evidence supports it being abnormal.
+
+    Prefers the mean of the per-metric bootstrap confidence scores produced by
+    Layer 1, which is the better-calibrated signal.  Falls back to the fraction
+    of the component's monitored metrics that went abnormal when Layer 1
+    returned no scores.
+
+    Shared by the ranking sort key and the emitted entry so the two can never
+    disagree about what a component's confidence is.
+    """
+    if metric_confidences and abnormal_metrics:
+        return (
+            sum(metric_confidences.get(m, 0.0) for m in abnormal_metrics)
+            / len(abnormal_metrics)
+        )
+    if total_metrics <= 0:
+        return 0.0
+    # Fallback: treat each abnormal metric as equally weighted evidence.
+    return len(abnormal_metrics) / total_metrics
+
+
 def _make_entry(
     service: str,
     onset_time: float,
     abnormal_metrics: list[str],
     metric_confidences: dict[str, float] | None = None,
+    total_metrics: int = TOTAL_METRICS,
 ) -> dict[str, Any]:
-    """Construct a ranked result dict for one service.
-
-    Confidence is the mean of per-metric confidence scores when available,
-    or the fraction of monitored metrics that were abnormal as a fallback.
-    """
-    if metric_confidences and abnormal_metrics:
-        confidence = (
-            sum(metric_confidences.get(m, 0.0) for m in abnormal_metrics)
-            / len(abnormal_metrics)
-        )
-    else:
-        # Fallback: treat each abnormal metric as equally weighted evidence.
-        confidence = len(abnormal_metrics) / TOTAL_METRICS
+    """Construct a ranked result dict for one service."""
+    confidence = _confidence(abnormal_metrics, metric_confidences, total_metrics)
 
     return {
         "service":          service,

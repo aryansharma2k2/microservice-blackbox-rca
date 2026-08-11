@@ -15,11 +15,17 @@ from pathlib import Path
 
 import click
 
-import ground_truth as gt
+# Project root on sys.path so the qualified import below works both when this
+# file is run as a script and when it is imported as part of the package.
+# Matches the pattern in chaos_inject.py.
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+
+import fault_injection.ground_truth as gt
 
 NAMESPACE = "boutique"
 FAULTS_DIR = Path(__file__).parent / "faults"
-EXPERIMENTS_DIR = Path(__file__).parent.parent / "experiments"
+EXPERIMENTS_DIR = ROOT / "experiments"
 
 
 # ---------------------------------------------------------------------------

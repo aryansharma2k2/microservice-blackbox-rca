@@ -1,10 +1,14 @@
 """Prometheus metrics client.
 
-Queries Prometheus for per-pod system metrics and returns them as
-pandas DataFrames or nested dicts ready for downstream analysis.
+Queries Prometheus for the metrics a :class:`~rca_engine.domains.DomainSpec`
+declares and returns them as pandas DataFrames or nested dicts ready for
+downstream analysis.
+
+The client is domain-agnostic: which PromQL to run and how to attribute each
+result series to a component both come from the spec.  It defaults to the
+Online Boutique domain, so existing callers behave exactly as before.
 """
 
-import re
 import time
 from typing import Any, cast
 
@@ -14,75 +18,45 @@ import numpy as np
 import pandas as pd
 import requests
 
+from rca_engine.domains import DEFAULT_DOMAIN, DomainSpec
+from rca_engine.domains.boutique import METRICS as _BOUTIQUE_METRICS
+from rca_engine.domains.boutique import pod_to_service as _pod_to_service
+
 logger = logging.getLogger(__name__)
 
 
-# PromQL expressions keyed by a short metric name.
-#
-# cAdvisor housekeeping interval on this kind cluster is 10s (set via
-# kubeletExtraArgs housekeeping-interval in infra/kind-cluster.yaml).
-# Counters update approximately once every 10 seconds regardless of how often
-# Prometheus scrapes.  Rate/deriv windows use [30s]/[45s] to guarantee each
-# evaluation window spans at least 2-3 real counter updates, giving stable
-# rate estimates with enough samples for CUSUM to distinguish sustained changes
-# from per-service noise.
+# Backwards-compatible view of the Boutique PromQL, kept so existing callers
+# and notebooks that imported ``QUERIES`` keep working.  The definitions now
+# live in rca_engine/domains/boutique.py alongside the rest of that domain.
 QUERIES: dict[str, str] = {
-    "cpu_rate": (
-        'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[30s])'
-    ),
-    # Fraction of CFS scheduling periods where the pod was CPU-throttled.
-    # Rises sharply when a cpu_hog fault hits a resource-limited container,
-    # even when cpu_rate stays flat at its limit.
-    # Note: cAdvisor emits this without a container label — it is pod-scoped.
-    "cpu_throttle_ratio": (
-        'sum by (pod, namespace) (rate(container_cpu_cfs_throttled_periods_total{namespace="boutique"}[30s]))'
-        ' / '
-        'sum by (pod, namespace) (rate(container_cpu_cfs_periods_total{namespace="boutique"}[30s]))'
-    ),
-    # Rate of memory growth (bytes/sec) over a 45s window.
-    # Using deriv() instead of the raw gauge makes this metric stationary:
-    # normal fluctuation stays near zero while a mem_leak shows a sustained
-    # positive slope.  The raw gauge drifts upward over time under any load,
-    # causing CUSUM to fire false change points for every non-memory fault.
-    # Window is 45s (> 2× the ~20s housekeeping interval) to guarantee at
-    # least 2 samples for the linear regression deriv uses internally.
-    "mem_wss": (
-        'deriv(container_memory_working_set_bytes{namespace="boutique",container!=""}[45s])'
-    ),
-    # interface="eth0" selects the pod's primary NIC only.  Without this
-    # filter, cAdvisor returns one series per virtual interface (lo, eth0,
-    # erspan0, gre0, tunl0, …) and the aggregation across all interfaces
-    # produces meaningless totals.
-    "net_rx_rate": (
-        'rate(container_network_receive_bytes_total{namespace="boutique",interface="eth0"}[30s])'
-    ),
-    "net_tx_rate": (
-        'rate(container_network_transmit_bytes_total{namespace="boutique",interface="eth0"}[30s])'
-    ),
-    "fs_read_rate": (
-        'rate(container_fs_reads_bytes_total{namespace="boutique",container!=""}[30s])'
-    ),
-    "fs_write_rate": (
-        'rate(container_fs_writes_bytes_total{namespace="boutique",container!=""}[30s])'
-    ),
+    name: query.promql for name, query in _BOUTIQUE_METRICS.items()
 }
 
-# Regex to strip the two random suffixes appended to pod names, e.g.
-# "cartservice-7d9b4f6c8-xkz9p"  to  "cartservice"
-_POD_SUFFIX_RE = re.compile(r"-[a-f0-9]+-[a-z0-9]+$")
-
-
-def _pod_to_service(pod_name: str) -> str:
-    """Strip the ReplicaSet hash and pod hash from pod_name to get the service name."""
-    return _POD_SUFFIX_RE.sub("", pod_name)
+# ``_pod_to_service`` is re-exported from the boutique domain for callers that
+# imported it from here before the domain layer existed.
+__all__ = ["QUERIES", "PrometheusMetricsClient"]
 
 
 class PrometheusMetricsClient:
-    """HTTP client for pulling range metrics from a Prometheus instance."""
+    """HTTP client for pulling range metrics from a Prometheus instance.
 
-    def __init__(self, prometheus_url: str = "http://localhost:9090") -> None:
+    Parameters
+    ----------
+    prometheus_url:
+        Base URL of the Prometheus server.
+    domain:
+        Which system's metrics to collect.  Defaults to Online Boutique so
+        that callers written before the domain layer keep working unchanged.
+    """
+
+    def __init__(
+        self,
+        prometheus_url: str = "http://localhost:9090",
+        domain: DomainSpec | None = None,
+    ) -> None:
         self.prometheus_url = prometheus_url.rstrip("/")
         self._range_endpoint = f"{self.prometheus_url}/api/v1/query_range"
+        self.domain = domain or DEFAULT_DOMAIN
 
     # Internal helpers
 
@@ -121,7 +95,7 @@ class PrometheusMetricsClient:
         end_time: float,
         step: str = "1s",
     ) -> pd.DataFrame:
-        """Fetch all metrics for the default namespace over [start_time, end_time].
+        """Fetch every metric this client's domain declares over the window.
 
         Args:
             start_time: POSIX timestamp (seconds) for the start of the window.
@@ -130,36 +104,42 @@ class PrometheusMetricsClient:
 
         Returns:
             DataFrame with columns: [timestamp, pod, service, metric, value].
-            Rows where ``pod`` is empty (node-level series) are dropped.
+            The ``service`` column holds the component the series was
+            attributed to — a microservice for the Boutique domain, a
+            subsystem node for a mechanism graph.  Series the domain cannot
+            attribute (e.g. cAdvisor node-level rows with no pod label) are
+            dropped.
         """
         rows: list[dict[str, Any]] = []
 
         logger.info(
-            "Fetching Prometheus metrics from %s for window [%s, %s] step=%s",
+            "Fetching Prometheus metrics from %s for domain '%s', "
+            "window [%s, %s] step=%s",
             self.prometheus_url,
+            self.domain.name,
             start_time,
             end_time,
             step,
         )
 
-        for metric_name, query in QUERIES.items():
+        for metric_name, query in self.domain.metrics.items():
             try:
-                results = self._query_range(query, start_time, end_time, step)
+                results = self._query_range(query.promql, start_time, end_time, step)
             except (ConnectionError, RuntimeError) as exc:
                 logger.warning("Skipping metric '%s': %s", metric_name, exc)
                 continue
 
             for series in results:
-                pod = series["metric"].get("pod", "")
-                if not pod:
-                    continue  # skip node-level / non-pod series
-                service = _pod_to_service(pod)
+                labels = series["metric"]
+                component = self.domain.resolve_component(metric_name, labels)
+                if component is None:
+                    continue  # series the domain cannot attribute
                 for ts_str, val_str in series["values"]:
                     rows.append(
                         {
                             "timestamp": float(ts_str),
-                            "pod": pod,
-                            "service": service,
+                            "pod": labels.get("pod", ""),
+                            "service": component,
                             "metric": metric_name,
                             "value": float(val_str),
                         }
