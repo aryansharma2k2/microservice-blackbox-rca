@@ -26,3 +26,7 @@ infra/boutique-manifests-patched.yaml
 
 # OS
 .DS_Store
+
+# Secrets — never commit credentials
+credentials.txt
+*.secret

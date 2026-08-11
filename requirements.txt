@@ -1,9 +1,10 @@
-numpy>=1.24
-scipy>=1.10
-pandas>=2.0
-requests>=2.31
-matplotlib>=3.7
-pyyaml>=6.0
-locust>=2.15
+# Runtime deps are declared in pyproject.toml; this file mirrors them so the
+# existing `make setup` flow keeps working. Prefer `pip install -e .[dev]`.
+numpy>=1.24,<3
+pandas>=2.0,<3
+pyarrow>=14.0
+requests>=2.31,<3
+matplotlib>=3.7,<4
+pyyaml>=6.0,<7
+click>=8.0,<9
 pytest>=7.0
-click>=8.0

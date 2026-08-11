@@ -143,7 +143,7 @@ bash infra/deploy-chaos-mesh.sh
 ### Run Load
 
 ```bash
-python infra/loadgen.py --duration 300 --rps 5 --pattern sine
+python infra/loadgen.py --duration 300 --rps 5
 ```
 
 ### Run One SLO-Triggered RCA Experiment
@@ -213,10 +213,11 @@ Run a focused test file:
 pytest tests/test_fault_chain.py -v
 ```
 
-The smoke tests require a live local cluster:
+The unit tests run on synthetic arrays and need no cluster. To diagnose a live
+cluster instead, point the engine at Prometheus directly:
 
 ```bash
-pytest tests/smoke_test.py -v
+python -m rca_engine --baseline 300 --fault 120
 ```
 
 ## Notes On Deployment

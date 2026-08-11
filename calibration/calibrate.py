@@ -105,7 +105,8 @@ def _run_single_calibration(
     # ------------------------------------------------------------------
     total_duration = BASELINE_DURATION + FAULT_DURATION + RECOVERY_WAIT + 30
     gen = WorkloadGenerator(frontend_url=FRONTEND_URL, quiet=True)
-    gen.run(duration_seconds=total_duration, base_rps=rps, pattern="constant")
+    # WorkloadGenerator is sine-only; it no longer accepts a `pattern` argument.
+    gen.run(duration_seconds=total_duration, base_rps=rps)
     time.sleep(BASELINE_DURATION)
 
     # ------------------------------------------------------------------
