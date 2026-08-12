@@ -436,7 +436,7 @@ class TestVllmDomain:
 
     def test_inputs_and_symptom_cannot_be_named_the_cause(self):
         excluded = VLLM.excluded_from_root_cause()
-        assert {"arrival_load", "prompt_shape", "ttft"} <= excluded
+        assert {"arrival_load", "request_shape", "ttft"} <= excluded
         # The eight real mechanisms stay eligible.
         assert "kv_cache_pressure" not in excluded
         assert "preemption" not in excluded

@@ -38,6 +38,7 @@ packages = [
     "fault_injection",
     "infra",
     "calibration",
+    "workload",
 ]
 
 [tool.pytest.ini_options]

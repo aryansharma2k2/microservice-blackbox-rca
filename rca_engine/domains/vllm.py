@@ -30,7 +30,7 @@ directly measurable via ``kv_block_idle_before_evict_seconds`` and
 
 Exogenous nodes
 ---------------
-``arrival_load`` and ``prompt_shape`` are inputs, not defects.  They are
+``arrival_load`` and ``request_shape`` are inputs, not defects.  They are
 usually the first thing to move, so without marking them exogenous the
 earliest-onset rule would blame "load" for every incident.  Marking them lets
 Layer 6 return a *capacity* verdict ("you are asking for more than this
@@ -83,14 +83,24 @@ METRICS: dict[str, MetricQuery] = {
     ),
     "prompt_tokens_p99": MetricQuery(
         promql=_q("vllm:request_prompt_tokens"),
-        component="prompt_shape",
+        component="request_shape",
         description="p99 prompt length. Rises on a long-prompt burst.",
     ),
     "prompt_tokens_p50": MetricQuery(
         promql=_q("vllm:request_prompt_tokens", 0.50),
-        component="prompt_shape",
+        component="request_shape",
         description="Median prompt length. Separates a shifted "
         "distribution from a heavy tail.",
+    ),
+    # Output length is as much a workload property as prompt length, and it
+    # is what drives KV growth over a request's lifetime. Without it, a
+    # long-output burst would be invisible to the exogenous check and get
+    # misreported as an internal pathology.
+    "generation_tokens_p99": MetricQuery(
+        promql=_q("vllm:request_generation_tokens"),
+        component="request_shape",
+        description="p99 output length. Rises when clients ask for more "
+        "tokens; each one holds KV blocks for longer.",
     ),
     # -- cache and memory ------------------------------------------------
     "kv_cache_usage": MetricQuery(
@@ -204,7 +214,7 @@ METRICS: dict[str, MetricQuery] = {
 MECHANISM_GRAPH: dict[str, list[str]] = {
     # Inputs push on the scheduler.
     "arrival_load": ["kv_cache_pressure", "queueing", "batch_composition", "gpu_saturation"],
-    "prompt_shape": ["prefill_cost", "kv_cache_pressure"],
+    "request_shape": ["prefill_cost", "kv_cache_pressure"],
     # A prefix-cache miss means the prompt must actually be prefilled, and
     # its blocks must actually be allocated.
     "prefix_cache_efficacy": ["prefill_cost", "kv_cache_pressure"],
@@ -235,7 +245,11 @@ VLLM = DomainSpec(
     component_graph=MECHANISM_GRAPH,
     component_metrics={
         "arrival_load": ("request_rate", "prompt_token_rate"),
-        "prompt_shape": ("prompt_tokens_p99", "prompt_tokens_p50"),
+        "request_shape": (
+            "prompt_tokens_p99",
+            "prompt_tokens_p50",
+            "generation_tokens_p99",
+        ),
         "prefix_cache_efficacy": (
             "prefix_cache_hit_rate",
             "kv_block_idle_before_evict_p50",
@@ -250,7 +264,7 @@ VLLM = DomainSpec(
         "host_saturation": ("host_cpu_rate", "host_cpu_throttle_ratio"),
         "ttft": ("ttft_p99",),
     },
-    exogenous=frozenset({"arrival_load", "prompt_shape"}),
+    exogenous=frozenset({"arrival_load", "request_shape"}),
     sli_node="ttft",
     # Mechanisms inside one process propagate far faster than an RPC hop:
     # cache exhaustion to preemption to queue growth is sub-second. FChain's
