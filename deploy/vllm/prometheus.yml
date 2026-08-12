@@ -18,6 +18,12 @@ scrape_configs:
     # target stays down and is ignored.
     honor_labels: true
 
+  # Container CPU/throttle for the vLLM container, backing `host_saturation`.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    metrics_path: /metrics
+
   - job_name: dcgm
     static_configs:
       - targets: ["dcgm-exporter:9400"]

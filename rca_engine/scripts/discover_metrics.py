@@ -140,15 +140,26 @@ def fetch_metric_text(url: str, timeout: float = 10.0) -> str:
     return resp.text
 
 
-def check_domain(spec: DomainSpec, surface: dict[str, str]) -> dict[str, list[str]]:
+def check_domain(
+    spec: DomainSpec,
+    surface: dict[str, str],
+    include_optional: bool = False,
+) -> dict[str, list[str]]:
     """Compare a domain's referenced metrics against an observed surface.
 
     Returns ``{metric_name: [missing_series, ...]}`` for every domain metric
     whose PromQL references something the surface does not expose.
+
+    Metrics marked ``optional`` are excluded unless *include_optional* is set.
+    They come from exporters that may legitimately be absent — DCGM on a
+    CPU-only box, cAdvisor outside Kubernetes — and conflating that with a
+    genuinely wrong metric name makes the check useless as a gate.
     """
     known = set(surface)
     missing: dict[str, list[str]] = {}
     for metric_name, query in spec.metrics.items():
+        if query.optional and not include_optional:
+            continue
         absent = sorted(
             ref
             for ref in referenced_metrics(query.promql)
@@ -164,8 +175,31 @@ def cli() -> None:
     """Record and verify a server's Prometheus metric surface."""
 
 
+def scrape_all(urls: tuple[str, ...]) -> dict[str, str]:
+    """Union the metric surfaces of several exporters.
+
+    A domain legitimately draws from more than one target — vLLM's own
+    ``/metrics`` for engine state, cAdvisor for the container's CPU, DCGM for
+    the GPU. Checking against only one would report the other two as drift.
+    """
+    surface: dict[str, str] = {}
+    for url in urls:
+        try:
+            surface.update(parse_metric_surface(fetch_metric_text(url)))
+        except requests.exceptions.RequestException as exc:
+            raise click.ClickException(f"Cannot scrape {url}: {exc}") from exc
+    return surface
+
+
 @cli.command()
-@click.option("--url", default="http://localhost:8000/metrics", show_default=True)
+@click.option(
+    "--url",
+    "urls",
+    multiple=True,
+    default=("http://localhost:8000/metrics",),
+    show_default=True,
+    help="Exporter to scrape. Repeat for several (vLLM, cAdvisor, DCGM).",
+)
 @click.option(
     "--out",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -173,23 +207,18 @@ def cli() -> None:
     show_default=True,
 )
 @click.option("--source", default="", help="Free-text note, e.g. 'vllm 0.11 on L4'.")
-def snapshot(url: str, out: Path, source: str) -> None:
-    """Scrape URL and write the observed metric surface to OUT."""
-    try:
-        text = fetch_metric_text(url)
-    except requests.exceptions.RequestException as exc:
-        raise click.ClickException(f"Cannot scrape {url}: {exc}") from exc
-
-    surface = parse_metric_surface(text)
+def snapshot(urls: tuple[str, ...], out: Path, source: str) -> None:
+    """Scrape each URL and write the union of their metric surfaces to OUT."""
+    surface = scrape_all(urls)
     if not surface:
-        raise click.ClickException(f"{url} returned no parseable metrics.")
+        raise click.ClickException(f"{', '.join(urls)} returned no parseable metrics.")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         json.dumps(
             {
                 "captured_at": datetime.now(timezone.utc).isoformat(),
-                "url": url,
+                "urls": list(urls),
                 "source": source,
                 "metrics": dict(sorted(surface.items())),
             },
@@ -216,18 +245,21 @@ def snapshot(url: str, out: Path, source: str) -> None:
     default=None,
     help="Snapshot file to check against.",
 )
-@click.option("--url", default=None, help="Scrape a live server instead.")
-def check(domain_name: str, surface: Path | None, url: str | None) -> None:
-    """Verify DOMAIN_NAME's metrics exist in a snapshot or on a live server."""
-    if surface is None and url is None:
+@click.option(
+    "--url",
+    "urls",
+    multiple=True,
+    default=(),
+    help="Scrape live exporter(s) instead. Repeat for several.",
+)
+def check(domain_name: str, surface: Path | None, urls: tuple[str, ...]) -> None:
+    """Verify DOMAIN_NAME's metrics exist in a snapshot or on live server(s)."""
+    if surface is None and not urls:
         raise click.UsageError("Pass either --surface or --url.")
 
-    if url is not None:
-        try:
-            observed = parse_metric_surface(fetch_metric_text(url))
-        except requests.exceptions.RequestException as exc:
-            raise click.ClickException(f"Cannot scrape {url}: {exc}") from exc
-        origin = url
+    if urls:
+        observed = scrape_all(urls)
+        origin = ", ".join(urls)
     else:
         assert surface is not None
         observed = json.loads(surface.read_text())["metrics"]
@@ -235,12 +267,27 @@ def check(domain_name: str, surface: Path | None, url: str | None) -> None:
 
     spec = get_domain(domain_name)
     missing = check_domain(spec, observed)
+    optional_missing = {
+        name: refs
+        for name, refs in check_domain(spec, observed, include_optional=True).items()
+        if name not in missing
+    }
 
-    total = len(spec.metrics)
-    click.echo(f"Domain '{domain_name}': {total} metrics checked against {origin}")
+    required = sum(1 for q in spec.metrics.values() if not q.optional)
+    click.echo(
+        f"Domain '{domain_name}': {required} required metrics "
+        f"(+{len(spec.metrics) - required} optional) checked against {origin}"
+    )
+
+    if optional_missing:
+        gated = sorted({spec.metrics[m].component for m in optional_missing})
+        click.echo(
+            f"  {len(optional_missing)} optional metric(s) absent — exporter not "
+            f"deployed here. Inert components: {', '.join(str(c) for c in gated)}"
+        )
 
     if not missing:
-        click.echo(f"  all {total} resolve against the observed surface  ✓")
+        click.echo(f"  all {required} required metrics resolve  ✓")
         return
 
     click.echo(f"\n  {len(missing)} of {total} reference metrics that are absent:\n")

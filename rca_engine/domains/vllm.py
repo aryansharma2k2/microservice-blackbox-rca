@@ -22,11 +22,21 @@ runs: queue-dominated points at admission (cache pressure, preemption,
 capacity), prefill-dominated at compute (long prompts, prefix-cache misses,
 GPU contention).
 
-**Block churn is observable.**  PagedAttention largely eliminates *external*
-fragmentation, so "memory fragmentation" in the classical sense is close to a
-red herring here.  The sharp version — prefix-cache eviction thrash — is
-directly measurable via ``kv_block_idle_before_evict_seconds`` and
-``kv_block_reuse_gap_seconds``.
+**Wasted prefill work is observable.**  PagedAttention largely eliminates
+*external* fragmentation, so "memory fragmentation" in the classical sense is
+close to a red herring here.  The sharp version is cache thrash: prompt tokens
+that had to be recomputed because their blocks were gone.
+``prompt_tokens_cached_total`` against ``prompt_tokens_total`` gives the
+token-level reuse rate, and ``request_prefill_kv_computed_tokens`` gives the
+KV actually computed per request.  Both rise when the cache stops working and
+when preemption forces recomputation.
+
+(An earlier draft used ``kv_block_reuse_gap_seconds`` and
+``kv_block_idle_before_evict_seconds``, which appear in vLLM's metrics
+documentation but are **not** exposed by the shipped V1 engine — the
+discovery script caught it.  The token-level signals above are what a real
+server actually reports, and they are arguably the better measurement anyway,
+since they count wasted work rather than block lifetimes.)
 
 Exogenous nodes
 ---------------
@@ -39,22 +49,34 @@ excluded — it is the symptom being explained.
 
 Status
 ------
-The metric names here follow vLLM's V1 engine.  They have **not** yet been
-validated against a running server; ``scripts/discover_metrics.py`` does that
-and fails loudly on drift.  Names moved between V0 and V1
-(``gpu_cache_usage_perc`` -> ``kv_cache_usage_perc``,
-``time_in_queue_requests`` -> ``request_queue_time_seconds``) and published
-sources disagree about ``_total`` suffixes on the prefix-cache counters, so
-treat this module as a hypothesis until discovery confirms it.
+Every ``vllm:`` metric below is confirmed present on a real server —
+``vllm/vllm-openai-cpu:latest-arm64`` serving Qwen3-0.6B — and the captured
+surface is committed at ``deploy/vllm/metric_surface.json``.  Re-check after
+any version bump::
+
+    python -m rca_engine.scripts.discover_metrics check vllm --url <server>/metrics
+
+The ``container_*`` metrics come from cAdvisor and are absent unless the
+monitoring sidecar is running; the ``DCGM_*`` metrics require the DCGM
+exporter and are absent on the CPU profile.  Those two components
+(``host_saturation``, ``gpu_saturation``) simply never go abnormal without
+their exporters, which is expected rather than a drift.
 """
 
 from __future__ import annotations
 
 from rca_engine.domains.base import DomainSpec, MetricQuery, histogram_quantile
 
-#: Kubernetes namespace the server runs in, for the container-level metrics
-#: that catch API-server/tokenizer starvation.
-NAMESPACE = "vllm"
+#: Selector for the server's own container, used by the metrics that catch
+#: API-server/tokenizer starvation. Matches how cAdvisor labels containers
+#: under docker-compose (``name="vllm-vllm-cpu-1"``); under Kubernetes swap
+#: this for ``namespace="vllm",container!=""``.
+#:
+#: Note: cAdvisor cannot see per-container cgroups on Docker Desktop for
+#: macOS — it reports only the root cgroup — so ``host_saturation`` is inert
+#: on a Mac laptop and the ``host_cpu_hog`` scenario can only be validated on
+#: Linux, which is where trace capture happens anyway.
+CONTAINER_SELECTOR = 'name=~".*vllm.*"'
 
 #: Rate window for counters and histogram buckets.  Wide enough that a p99 is
 #: meaningful at single-digit RPS, narrow enough that CUSUM still sees an
@@ -96,23 +118,20 @@ METRICS: dict[str, MetricQuery] = {
     # is what drives KV growth over a request's lifetime. Without it, a
     # long-output burst would be invisible to the exogenous check and get
     # misreported as an internal pathology.
-    "generation_tokens_p99": MetricQuery(
-        promql=_q("vllm:request_generation_tokens"),
+    # What clients *asked for*, which is the workload property. Distinct from
+    # request_generation_tokens, which is what was actually produced and is
+    # therefore partly an outcome of the server's own behaviour.
+    "requested_max_tokens_p99": MetricQuery(
+        promql=_q("vllm:request_params_max_tokens"),
         component="request_shape",
-        description="p99 output length. Rises when clients ask for more "
-        "tokens; each one holds KV blocks for longer.",
+        description="p99 requested output length. Rises when clients ask for "
+        "more tokens; each one holds KV blocks for longer.",
     ),
     # -- cache and memory ------------------------------------------------
     "kv_cache_usage": MetricQuery(
         promql="sum(vllm:kv_cache_usage_perc)",
         component="kv_cache_pressure",
         description="Fraction of KV cache blocks in use (0-1).",
-    ),
-    "kv_block_reuse_gap_p50": MetricQuery(
-        promql=_q("vllm:kv_block_reuse_gap_seconds", 0.50),
-        component="kv_cache_pressure",
-        description="Time between reuses of a KV block. Collapses when the "
-        "cache is churning.",
     ),
     "prefix_cache_hit_rate": MetricQuery(
         promql=(
@@ -121,14 +140,19 @@ METRICS: dict[str, MetricQuery] = {
             f"clamp_min(sum(rate(vllm:prefix_cache_queries_total[{RATE_WINDOW}])), 1)"
         ),
         component="prefix_cache_efficacy",
-        description="Prefix cache hit ratio. Collapses under prefix-diversity "
-        "pressure, forcing full re-prefill of every request.",
+        description="Block-level prefix cache hit ratio. Collapses under "
+        "prefix-diversity pressure, forcing full re-prefill of every request.",
     ),
-    "kv_block_idle_before_evict_p50": MetricQuery(
-        promql=_q("vllm:kv_block_idle_before_evict_seconds", 0.50),
+    "cached_token_ratio": MetricQuery(
+        promql=(
+            f"sum(rate(vllm:prompt_tokens_cached_total[{RATE_WINDOW}]))"
+            " / "
+            f"clamp_min(sum(rate(vllm:prompt_tokens_total[{RATE_WINDOW}])), 1)"
+        ),
         component="prefix_cache_efficacy",
-        description="How long a block sits idle before eviction. Short means "
-        "eviction thrash — blocks are evicted while still useful.",
+        description="Fraction of prompt tokens served from cache. The "
+        "token-level view of the same effect, and the one that translates "
+        "directly into prefill work avoided.",
     ),
     # -- scheduler -------------------------------------------------------
     "preemption_rate": MetricQuery(
@@ -153,11 +177,25 @@ METRICS: dict[str, MetricQuery] = {
         component="batch_composition",
         description="Sequences in the running batch.",
     ),
+    "iteration_tokens_p50": MetricQuery(
+        promql=_q("vllm:iteration_tokens_total", 0.50),
+        component="batch_composition",
+        description="Median tokens processed per scheduler step. Shows how "
+        "the step budget splits between prefill and decode — the direct view "
+        "of batch shape that requests_running alone cannot give.",
+    ),
     # -- compute ---------------------------------------------------------
     "prefill_time_p99": MetricQuery(
         promql=_q("vllm:request_prefill_time_seconds"),
         component="prefill_cost",
         description="p99 prefill duration. The compute-side half of TTFT.",
+    ),
+    "prefill_kv_computed_p99": MetricQuery(
+        promql=_q("vllm:request_prefill_kv_computed_tokens"),
+        component="prefill_cost",
+        description="p99 KV tokens actually computed during prefill. Rises "
+        "when the cache stops serving reuse and when preemption forces "
+        "recomputation — wasted work, measured directly.",
     ),
     "inter_token_latency_p99": MetricQuery(
         promql=_q("vllm:inter_token_latency_seconds"),
@@ -176,30 +214,34 @@ METRICS: dict[str, MetricQuery] = {
         component="gpu_saturation",
         description="Fraction of time SMs are active. Requires the DCGM "
         "exporter; absent on the CPU backend.",
+        optional=True,
     ),
     "gpu_sm_clock": MetricQuery(
         promql="avg(DCGM_FI_DEV_SM_CLOCK)",
         component="gpu_saturation",
         description="SM clock. Drops on thermal or power throttling.",
+        optional=True,
     ),
     # The API server, tokenizer, and detokenizer run on CPU. Starving them
     # spikes TTFT while the KV cache sits idle — the case that breaks every
     # "TTFT up + queue up implies cache pressure" heuristic.
     "host_cpu_rate": MetricQuery(
         promql=(
-            f'sum(rate(container_cpu_usage_seconds_total{{namespace="{NAMESPACE}",container!=""}}[{RATE_WINDOW}]))'
+            f"sum(rate(container_cpu_usage_seconds_total{{{CONTAINER_SELECTOR}}}[{RATE_WINDOW}]))"
         ),
         component="host_saturation",
         description="CPU seconds/sec consumed by the server container.",
+        optional=True,
     ),
     "host_cpu_throttle_ratio": MetricQuery(
         promql=(
-            f'sum(rate(container_cpu_cfs_throttled_periods_total{{namespace="{NAMESPACE}"}}[{RATE_WINDOW}]))'
+            f"sum(rate(container_cpu_cfs_throttled_periods_total{{{CONTAINER_SELECTOR}}}[{RATE_WINDOW}]))"
             " / "
-            f'clamp_min(sum(rate(container_cpu_cfs_periods_total{{namespace="{NAMESPACE}"}}[{RATE_WINDOW}])), 1)'
+            f"clamp_min(sum(rate(container_cpu_cfs_periods_total{{{CONTAINER_SELECTOR}}}[{RATE_WINDOW}])), 1)"
         ),
         component="host_saturation",
         description="Fraction of CFS periods the container was throttled.",
+        optional=True,
     ),
     # -- the SLI ----------------------------------------------------------
     "ttft_p99": MetricQuery(
@@ -248,17 +290,14 @@ VLLM = DomainSpec(
         "request_shape": (
             "prompt_tokens_p99",
             "prompt_tokens_p50",
-            "generation_tokens_p99",
+            "requested_max_tokens_p99",
         ),
-        "prefix_cache_efficacy": (
-            "prefix_cache_hit_rate",
-            "kv_block_idle_before_evict_p50",
-        ),
-        "kv_cache_pressure": ("kv_cache_usage", "kv_block_reuse_gap_p50"),
+        "prefix_cache_efficacy": ("prefix_cache_hit_rate", "cached_token_ratio"),
+        "kv_cache_pressure": ("kv_cache_usage",),
         "preemption": ("preemption_rate",),
         "queueing": ("requests_waiting", "queue_time_p99"),
-        "batch_composition": ("requests_running",),
-        "prefill_cost": ("prefill_time_p99",),
+        "batch_composition": ("requests_running", "iteration_tokens_p50"),
+        "prefill_cost": ("prefill_time_p99", "prefill_kv_computed_p99"),
         "decode_health": ("inter_token_latency_p99", "generation_token_rate"),
         "gpu_saturation": ("gpu_sm_active", "gpu_sm_clock"),
         "host_saturation": ("host_cpu_rate", "host_cpu_throttle_ratio"),

@@ -34,7 +34,45 @@ QUERIES: dict[str, str] = {
 
 # ``_pod_to_service`` is re-exported from the boutique domain for callers that
 # imported it from here before the domain layer existed.
-__all__ = ["QUERIES", "PrometheusMetricsClient"]
+__all__ = ["QUERIES", "PrometheusMetricsClient", "metric_matrix_from_frame"]
+
+
+def metric_matrix_from_frame(df: pd.DataFrame) -> dict[str, dict[str, np.ndarray]]:
+    """Convert a tidy metrics frame into the nested dict the engine consumes.
+
+    ``{component: {metric: np.ndarray}}``, with values averaged across pods so
+    each entry is a single 1-D array on a common time axis.
+
+    Shared deliberately between live capture and offline replay: a run that is
+    diagnosed from a committed Parquet file must go through exactly the same
+    reshaping as one diagnosed against a live Prometheus, or replayed results
+    would not be evidence for anything.
+
+    Expects columns ``[timestamp, service, metric, value]``.
+    """
+    if df.empty:
+        return {}
+
+    matrix: dict[str, dict[str, np.ndarray]] = {}
+    for key, group in df.groupby(["service", "metric"]):
+        # Pandas typing exposes group keys as Hashable, so avoid direct tuple unpacking.
+        if not isinstance(key, tuple) or len(key) != 2:
+            continue
+        service, metric = str(key[0]), str(key[1])
+        # Average over pods — keeps the time axis consistent
+        mean_by_timestamp = cast(pd.Series, group.groupby("timestamp")["value"].mean())
+        matrix.setdefault(service, {})[metric] = mean_by_timestamp.sort_index().to_numpy()
+
+    return matrix
+
+
+def _log_matrix_summary(matrix: dict[str, dict[str, np.ndarray]]) -> None:
+    total_series = sum(len(metrics) for metrics in matrix.values())
+    logger.info(
+        "Built metric matrix with %d components and %d component-metric streams",
+        len(matrix),
+        total_series,
+    )
 
 
 class PrometheusMetricsClient:
@@ -166,33 +204,9 @@ class PrometheusMetricsClient:
             Values are averaged across pods belonging to the same service so
             that each entry is a single 1-D array aligned to a common time axis.
         """
-        df = self.fetch_metrics(start_time, end_time, step)
-        if df.empty:
-            return {}
-
-        matrix: dict[str, dict[str, np.ndarray]] = {}
-        for key, group in df.groupby(["service", "metric"]):
-            # Pandas typing exposes group keys as Hashable, so avoid direct tuple unpacking.
-            if not isinstance(key, tuple) or len(key) != 2:
-                continue
-            service, metric = str(key[0]), str(key[1])
-            # Average over pods — keeps the time axis consistent
-            mean_by_timestamp = cast(
-                pd.Series, group.groupby("timestamp")["value"].mean()
-            )
-            averaged = mean_by_timestamp.sort_index()
-            matrix.setdefault(service, {})[metric] = averaged.to_numpy()
-
-        self._log_matrix_summary(matrix)
+        matrix = metric_matrix_from_frame(self.fetch_metrics(start_time, end_time, step))
+        _log_matrix_summary(matrix)
         return matrix
-
-    def _log_matrix_summary(self, matrix: dict[str, dict[str, np.ndarray]]) -> None:
-        total_series = sum(len(metrics) for metrics in matrix.values())
-        logger.info(
-            "Built metric matrix with %d services and %d service-metric streams",
-            len(matrix),
-            total_series,
-        )
 
 
 # Demo

@@ -89,8 +89,13 @@ class TestParseMetricSurface:
         assert "vllm:request_queue_time_seconds_bucket" not in surface
 
     def test_picks_up_non_vllm_exporters(self, surface):
-        assert surface["DCGM_FI_PROF_SM_ACTIVE"] == "gauge"
+        """A domain draws from several targets; the surface unions them.
+
+        No DCGM series here — the capture was CPU-only, which is exactly why
+        the GPU metrics are marked optional in the domain.
+        """
         assert surface["container_cpu_usage_seconds_total"] == "counter"
+        assert not any(name.startswith("DCGM_") for name in surface)
 
     def test_records_untyped_samples(self):
         parsed = parse_metric_surface("some_metric_without_a_type_header 1.0\n")
@@ -102,14 +107,39 @@ class TestParseMetricSurface:
 
 class TestCheckDomain:
 
-    def test_vllm_domain_resolves_against_the_v1_surface(self, surface):
-        """Every metric the vLLM domain references must exist. If this fails,
-        the domain spec drifted from the engine's real metric names."""
+    def test_vllm_domain_resolves_against_a_real_server(self, surface):
+        """Every required metric must exist on a real server.
+
+        The fixture is captured from `vllm/vllm-openai-cpu:latest-arm64`
+        serving Qwen3-0.6B, not written by hand. An earlier hand-written
+        version claimed `vllm:kv_block_reuse_gap_seconds` and
+        `vllm:kv_block_idle_before_evict_seconds` exist — they appear in the
+        docs but the shipped engine does not expose them. This test is what
+        stops that happening again.
+        """
         missing = check_domain(VLLM, surface)
         assert missing == {}, (
-            "vLLM domain references metrics absent from the V1 surface: "
+            "vLLM domain references metrics absent from a real server: "
             f"{missing}"
         )
+
+    def test_exporter_gated_metrics_are_marked_optional(self, surface):
+        """DCGM needs a GPU and cAdvisor's CFS counters need a real cgroup
+        tree. Those absences are environmental, and must not be reported the
+        same way as a wrong metric name."""
+        optional_absent = set(check_domain(VLLM, surface, include_optional=True))
+        assert optional_absent - set(check_domain(VLLM, surface)), (
+            "expected some optional metrics to be absent from a CPU-only capture"
+        )
+        for name in optional_absent - set(check_domain(VLLM, surface)):
+            assert VLLM.metrics[name].optional, f"{name} should be marked optional"
+
+    def test_the_ttft_decomposition_signals_are_present(self, surface):
+        """The domain's central claim: TTFT splits into queue and prefill.
+        If either histogram were absent the whole approach would collapse."""
+        assert "vllm:request_queue_time_seconds" in surface
+        assert "vllm:request_prefill_time_seconds" in surface
+        assert "vllm:time_to_first_token_seconds" in surface
 
     def test_detects_a_renamed_metric(self, surface):
         """The V0 -> V1 rename this check exists to catch."""
@@ -140,6 +170,7 @@ class TestCheckDomain:
             "ratio": ["vllm:nope_a_total", "vllm:nope_b_total"]
         }
 
-    def test_empty_surface_flags_everything(self):
-        missing = check_domain(VLLM, {})
-        assert len(missing) == len(VLLM.metrics)
+    def test_empty_surface_flags_every_required_metric(self):
+        required = [n for n, q in VLLM.metrics.items() if not q.optional]
+        assert set(check_domain(VLLM, {})) == set(required)
+        assert set(check_domain(VLLM, {}, include_optional=True)) == set(VLLM.metrics)

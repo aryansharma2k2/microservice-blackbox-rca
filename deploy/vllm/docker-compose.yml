@@ -18,21 +18,31 @@ services:
     # Apple Silicon needs -arm64; x86 hosts want -x86_64, which additionally
     # assumes avx512f support.
     image: ${VLLM_CPU_IMAGE:-vllm/vllm-openai-cpu:latest-arm64}
+    # The image entrypoint is ["vllm", "serve"] and the model is positional.
+    # Overridden to a shell so ${VLLM_EXTRA_ARGS} can expand to zero or many
+    # flags — that is how config-kind scenarios restart the server degraded.
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --model=${MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
-      - --port=8000
-      # A deliberately small KV cache. Constraining it is a feature here:
-      # preemption and cache pressure trigger at modest RPS, so faults are
-      # cheap to induce and unambiguous.
-      - --max-model-len=${MAX_MODEL_LEN:-4096}
-      - --max-num-seqs=${MAX_NUM_SEQS:-16}
-      - --disable-log-requests
+      - >
+        exec vllm serve ${MODEL:-Qwen/Qwen3-0.6B}
+        --host 0.0.0.0
+        --port 8000
+        --max-model-len ${MAX_MODEL_LEN:-4096}
+        --max-num-seqs ${MAX_NUM_SEQS:-16}
+        ${VLLM_EXTRA_ARGS:-}
     ports:
       - "8000:8000"
     volumes:
       - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
+      # KV cache size for the CPU backend, in GiB. The CPU equivalent of
+      # --gpu-memory-utilization; keep it small so cache pressure is reachable.
+      - VLLM_CPU_KVCACHE_SPACE=${CPU_KVCACHE_GB:-2}
+    # vLLM's engine core needs ~160 MiB of shared memory for its ring buffer.
+    # Docker's 64 MiB default is not enough, and `ipc: host` does not help on
+    # Docker Desktop, where the daemon runs inside a VM.
+    shm_size: "2gb"
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s
@@ -43,15 +53,15 @@ services:
   vllm-gpu:
     profiles: ["gpu"]
     image: ${VLLM_GPU_IMAGE:-vllm/vllm-openai:v0.11.0}
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --model=${MODEL:-Qwen/Qwen2.5-7B-Instruct}
-      - --port=8000
-      # On a 24GB L4 a 7B at fp16 leaves roughly 7GB of KV cache. Lower this
-      # to make cache pressure easier to provoke; it is also one of the
-      # config-side faults in the library.
-      - --gpu-memory-utilization=${GPU_MEM_UTIL:-0.90}
-      - --max-model-len=${MAX_MODEL_LEN:-8192}
-      - --disable-log-requests
+      - >
+        exec vllm serve ${MODEL:-Qwen/Qwen2.5-7B-Instruct}
+        --host 0.0.0.0
+        --port 8000
+        --gpu-memory-utilization ${GPU_MEM_UTIL:-0.90}
+        --max-model-len ${MAX_MODEL_LEN:-8192}
+        ${VLLM_EXTRA_ARGS:-}
     ports:
       - "8000:8000"
     volumes:
@@ -89,6 +99,29 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  # Container-level CPU for the `host_saturation` component. The API server,
+  # tokenizer, and detokenizer run on CPU; starving them spikes TTFT while the
+  # KV cache sits idle, which is the confounder the whole project turns on.
+  # Without this exporter that component has no data and never fires.
+  cadvisor:
+    profiles: ["cpu", "gpu"]
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    command:
+      - --housekeeping_interval=1s
+      - --docker_only=true
+    ports:
+      - "8080:8080"
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      # Mounted explicitly: on Docker Desktop the /var/run bind above does not
+      # expose the daemon socket, so container discovery silently fails and
+      # cAdvisor reports only the root cgroup.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
   prometheus:
     profiles: ["cpu", "gpu"]

@@ -218,7 +218,10 @@ _SCENARIOS: tuple[Scenario, ...] = (
         "usual KV cache. Cache pressure and preemption at a load the "
         "deployment should handle comfortably.",
         fault=NOMINAL,
-        server_args=("--gpu-memory-utilization=0.35",),
+        # Constrains the cache directly rather than via total memory, so it
+        # means the same thing on the CPU and GPU backends —
+        # --gpu-memory-utilization is meaningless on CPU.
+        server_args=("--kv-cache-memory-bytes=268435456",),
         confounds_with=("qps_ramp", "long_output_burst"),
     ),
     Scenario(

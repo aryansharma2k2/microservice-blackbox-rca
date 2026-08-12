@@ -54,11 +54,19 @@ class MetricQuery:
         ``component_from_labels`` (Boutique: from the ``pod`` label).
     description:
         Free text; surfaced in evidence bundles and the writeup.
+    optional:
+        True when the metric comes from an exporter that may legitimately not
+        be deployed — DCGM on a CPU-only box, cAdvisor outside Kubernetes.
+        The drift check warns about these instead of failing, so "this
+        environment has no GPU" is not reported the same way as "this metric
+        name is wrong", which is the distinction that matters when deciding
+        whether it is safe to capture traces.
     """
 
     promql: str
     component: str | None = None
     description: str = ""
+    optional: bool = False
 
 
 def histogram_quantile(
