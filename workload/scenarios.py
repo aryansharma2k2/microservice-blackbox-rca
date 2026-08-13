@@ -89,6 +89,58 @@ class Phase:
             f"output {self.max_tokens[0]}-{self.max_tokens[1]}tok, {prefix}"
         )
 
+    def scaled(self, rps: float = 1.0, prompt: float = 1.0, output: float = 1.0) -> "Phase":
+        """Return this phase rescaled for a different serving capacity.
+
+        A scenario encodes a *ratio* — 4x the rate, 30x the prompt length —
+        and that ratio is what the fault consists of. The absolute level is a
+        property of the deployment, not of the scenario, so it can be scaled
+        without changing what is being tested.
+
+        Prefix reuse is deliberately not scaled: it is a categorical property
+        of the workload, and halving it would silently weaken the very
+        mechanism `prefix_diversity` exists to provoke.
+        """
+        def _rng(bounds: tuple[int, int], factor: float) -> tuple[int, int]:
+            lo, hi = bounds
+            return max(1, int(lo * factor)), max(1, int(hi * factor))
+
+        return Phase(
+            rps=max(0.1, self.rps * rps),
+            prompt_tokens=_rng(self.prompt_tokens, prompt),
+            max_tokens=_rng(self.max_tokens, output),
+            shared_prefixes=self.shared_prefixes,
+        )
+
+
+@dataclass(frozen=True)
+class Profile:
+    """How to rescale the library for a given deployment's capacity."""
+
+    name: str
+    rps: float
+    prompt: float
+    output: float
+    note: str
+
+
+#: Sized for the capture target: one 24GB GPU serving a 7B model, where the
+#: nominal 6 rps at 256-512 token prompts sits comfortably below saturation.
+GPU_PROFILE = Profile("gpu", 1.0, 1.0, 1.0, "as authored; sized for a 7B on one GPU")
+
+#: The CPU backend serves roughly 1 rps at the nominal request shape — six
+#: times oversubscribed — so an unscaled run has no valid baseline at all:
+#: the queue grows without bound before any fault is injected. Measured on
+#: vllm-openai-cpu with Qwen3-0.6B; adjust if your box differs.
+CPU_PROFILE = Profile(
+    "cpu", rps=0.17, prompt=0.25, output=0.33,
+    note="scaled down ~6x for the CPU backend. An earlier 0.33 factor (2 rps) "
+    "completed almost every request but still accumulated backlog, and the "
+    "resulting latency drift made a clean run look like a real fault.",
+)
+
+PROFILES: dict[str, Profile] = {p.name: p for p in (GPU_PROFILE, CPU_PROFILE)}
+
 
 #: The steady state every scenario departs from. Modest load, short prompts,
 #: short outputs, high prefix reuse — a well-behaved chat workload.
@@ -329,6 +381,21 @@ def get_scenario(name: str) -> Scenario:
         raise KeyError(
             f"Unknown scenario {name!r}. Available: {', '.join(sorted(SCENARIOS))}"
         ) from None
+
+
+def apply_profile(scenario: Scenario, profile: Profile) -> Scenario:
+    """Rescale a scenario's phases for a deployment's capacity.
+
+    Ground truth, verdict, and kind are untouched — only the absolute
+    workload level moves, so a run remains a test of the same mechanism.
+    """
+    from dataclasses import replace
+
+    return replace(
+        scenario,
+        baseline=scenario.baseline.scaled(profile.rps, profile.prompt, profile.output),
+        fault=scenario.fault.scaled(profile.rps, profile.prompt, profile.output),
+    )
 
 
 def scenarios_for(

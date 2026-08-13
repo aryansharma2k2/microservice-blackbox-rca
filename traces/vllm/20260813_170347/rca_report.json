@@ -1,0 +1,22 @@
+{
+  "run_id": "20260813_170347",
+  "scenario": "clean",
+  "domain": "vllm",
+  "expected": null,
+  "expected_verdict": "no_anomaly",
+  "predicted": "batch_composition",
+  "predicted_verdict": "capacity",
+  "rank_of_expected": null,
+  "ranked": [
+    "batch_composition",
+    "prefill_cost",
+    "arrival_load",
+    "decode_health",
+    "request_shape",
+    "kv_cache_pressure",
+    "ttft"
+  ],
+  "top1": false,
+  "top3": false,
+  "verdict_correct": false
+}

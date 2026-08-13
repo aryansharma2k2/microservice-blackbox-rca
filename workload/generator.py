@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 #: matter.
 TOKENS_PER_WORD = 1.3
 
+#: HTTP connection pool size. Must comfortably exceed the in-flight request
+#: count at the highest scenario rate (24 rps against multi-second responses),
+#: or the client throttles itself and the fault under test is masked.
+CONNECTION_POOL_SIZE = 256
+
 #: Common short words, most of which are a single token. Keeps the estimate
 #: above honest and makes generated prompts compress poorly, so the server
 #: cannot shortcut them.
@@ -79,6 +84,12 @@ class RequestResult:
 
 @dataclass
 class WorkloadStats:
+    #: Requests handed to a worker thread.
+    dispatched: int = 0
+    #: Requests that finished, successfully or not. `dispatched - sent` is the
+    #: in-flight backlog, which is the clearest saturation signal available
+    #: client-side: if it grows without bound the offered rate exceeds what
+    #: the server can absorb.
     sent: int = 0
     ok: int = 0
     failed: int = 0
@@ -119,6 +130,17 @@ class VllmWorkloadGenerator:
 
         self._rng = random.Random(seed)
         self._session = requests.Session()
+        # requests' default pool holds 10 connections. Requests are fired
+        # concurrently, so at the rates the scenarios use the client would
+        # queue on its own pool before the server ever became the bottleneck
+        # — and the experiment would be measuring the load generator.
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=CONNECTION_POOL_SIZE,
+            pool_maxsize=CONNECTION_POOL_SIZE,
+            max_retries=0,
+        )
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
         self._phase: Phase | None = None
         self._phase_lock = threading.Lock()
@@ -128,6 +150,11 @@ class VllmWorkloadGenerator:
         self._results: deque[RequestResult] = deque()
         self._results_lock = threading.Lock()
         self.stats = WorkloadStats()
+        #: (timestamp, in-flight count) sampled by the pacing loop. A rising
+        #: trend means backlog is accumulating even when the completion rate
+        #: still looks acceptable — the system is not in steady state, so the
+        #: baseline is not a valid control period.
+        self._backlog: deque[tuple[float, int]] = deque(maxlen=10_000)
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -312,6 +339,11 @@ class VllmWorkloadGenerator:
                 continue
 
             phase = self._current_phase()
+            with self._results_lock:
+                self.stats.dispatched += 1
+                self._backlog.append(
+                    (time.time(), self.stats.dispatched - self.stats.sent)
+                )
             threading.Thread(
                 target=self._send_one, args=(phase, random.Random(rng.random())),
                 daemon=True,
@@ -355,6 +387,54 @@ class VllmWorkloadGenerator:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=10)
+
+    def health(self, offered_rps: float, window_seconds: float) -> dict:
+        """Is the server keeping up with the offered load?
+
+        A run whose *baseline* is already saturated cannot support any
+        conclusion: the queue is growing before the fault is injected, so the
+        two windows are not a controlled comparison, and onset ordering across
+        a monotonically drifting system is meaningless. This is the check that
+        distinguishes "the pipeline was wrong" from "the experiment was
+        invalid", which otherwise look identical in the output.
+
+        Returns the measurements plus a ``saturated`` verdict.
+        """
+        now = time.time()
+        cutoff = now - window_seconds
+        with self._results_lock:
+            dispatched = self.stats.dispatched
+            completed = self.stats.sent
+            failed = self.stats.failed
+            recent = [r for r in self._results if r.completed_at >= cutoff]
+            backlog = [(t, n) for t, n in self._backlog if t >= cutoff]
+
+        in_flight = max(0, dispatched - completed)
+        completed_rps = len(recent) / window_seconds if window_seconds > 0 else 0.0
+        failure_rate = failed / completed if completed else 0.0
+        keeping_up = completed_rps >= 0.9 * offered_rps if offered_rps > 0 else True
+
+        # Backlog trend across the window. A completion rate that merely looks
+        # close to the offered rate can still hide slow accumulation, and that
+        # accumulation shows up later as a monotonic latency drift the change
+        # point detector will (correctly) flag — turning a "clean" run into a
+        # fault it was never supposed to contain.
+        backlog_growth = 0.0
+        if len(backlog) >= 4:
+            mid = len(backlog) // 2
+            first = sum(n for _, n in backlog[:mid]) / mid
+            second = sum(n for _, n in backlog[mid:]) / (len(backlog) - mid)
+            backlog_growth = second - first
+        drifting = backlog_growth > max(1.0, 0.5 * offered_rps)
+
+        return {
+            "offered_rps": round(offered_rps, 2),
+            "completed_rps": round(completed_rps, 2),
+            "in_flight": in_flight,
+            "backlog_growth": round(backlog_growth, 2),
+            "failure_rate": round(failure_rate, 3),
+            "saturated": (not keeping_up) or failure_rate > 0.05 or drifting,
+        }
 
     def summary(self) -> dict:
         with self._results_lock:

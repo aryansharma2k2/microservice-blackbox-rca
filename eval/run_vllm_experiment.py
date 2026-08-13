@@ -50,7 +50,14 @@ from rca_engine.scripts.discover_metrics import (
     parse_metric_surface,
 )
 from workload.generator import VllmWorkloadGenerator
-from workload.scenarios import CONFIG, INFRA, Scenario, get_scenario
+from workload.scenarios import (
+    CONFIG,
+    INFRA,
+    PROFILES,
+    Scenario,
+    apply_profile,
+    get_scenario,
+)
 
 ROOT = Path(__file__).parent.parent
 TRACES_DIR = ROOT / "traces" / "vllm"
@@ -235,6 +242,27 @@ def run_experiment(
         time.sleep(baseline_s)
         baseline_end = time.time()
 
+        # A saturated baseline means the queue was already growing without
+        # bound before anything was injected. The run still gets written — the
+        # artifact is useful for inspection — but it is flagged so the
+        # evaluation excludes it rather than counting it as a pipeline miss.
+        health = generator.health(scenario.baseline.rps, window_seconds=baseline_s)
+        baseline_valid = not health["saturated"]
+        if not baseline_valid:
+            click.echo(
+                f"  [WARN] baseline is saturated — offered {health['offered_rps']} rps, "
+                f"completed {health['completed_rps']} rps, {health['in_flight']} in "
+                f"flight, {health['failure_rate']:.0%} failing.\n"
+                "         There is no valid control period, so this run cannot "
+                "support a conclusion. It will be marked invalid.\n"
+                "         Lower the load with --profile cpu, or use a bigger box."
+            )
+        else:
+            click.echo(
+                f"  [baseline ok] completed {health['completed_rps']}/"
+                f"{health['offered_rps']} rps, {health['failure_rate']:.0%} failing"
+            )
+
         # 2. Inject ------------------------------------------------------
         if scenario.kind == CONFIG:
             # A restart drops in-flight requests, so pause the generator to
@@ -280,6 +308,8 @@ def run_experiment(
                     "scenario": scenario.name,
                     "kind": scenario.kind,
                     "step_seconds": step_seconds,
+                    "baseline_valid": baseline_valid,
+                    "baseline_health": health,
                     "windows": {
                         "baseline": [baseline_start, baseline_end],
                         "fault": [fault_start, fault_end],
@@ -336,7 +366,7 @@ def run_experiment(
         )
     )
 
-    mark = "PASS" if result.top1 else "MISS"
+    mark = "PASS" if result.top1 else ("INVALID" if not baseline_valid else "MISS")
     click.echo(
         f"  [{mark}] expected={result.expected or 'nothing'} "
         f"predicted={result.predicted or 'nothing'} "
@@ -356,6 +386,15 @@ def run_experiment(
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--scenario", "scenario_name", required=True, help="Scenario to run.")
+@click.option(
+    "--profile",
+    "profile_name",
+    type=click.Choice(sorted(PROFILES)),
+    default="gpu",
+    show_default=True,
+    help="Rescale the workload for this deployment's capacity. Scenario "
+    "ratios are preserved; only the absolute level changes.",
+)
 @click.option("--baseline", "baseline_s", default=120, show_default=True)
 @click.option("--fault", "fault_s", default=180, show_default=True)
 @click.option("--settle", "settle_s", default=60, show_default=True)
@@ -378,6 +417,7 @@ def run_experiment(
 @click.option("-v", "--verbose", is_flag=True)
 def main(
     scenario_name: str,
+    profile_name: str,
     baseline_s: int,
     fault_s: int,
     settle_s: int,
@@ -396,7 +436,10 @@ def main(
         format="%(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    scenario = get_scenario(scenario_name)
+    profile = PROFILES[profile_name]
+    scenario = apply_profile(get_scenario(scenario_name), profile)
+    if profile_name != "gpu":
+        click.echo(f"Profile '{profile.name}': {profile.note}")
 
     for i in range(repeat):
         run_experiment(
