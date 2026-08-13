@@ -1,0 +1,41 @@
+{
+  "run_id": "20260813_171331",
+  "scenario": "prefix_diversity",
+  "kind": "workload",
+  "step_seconds": 1.0,
+  "baseline_valid": true,
+  "baseline_health": {
+    "offered_rps": 1.02,
+    "completed_rps": 1.02,
+    "in_flight": 5,
+    "backlog_growth": -0.88,
+    "failure_rate": 0.0,
+    "saturated": false
+  },
+  "windows": {
+    "baseline": [
+      1786641256.917471,
+      1786641336.9187741
+    ],
+    "fault": [
+      1786641336.919172,
+      1786641426.9216142
+    ]
+  },
+  "events": {
+    "baseline_start": "2026-08-13T17:14:16.917471+00:00",
+    "fault_start": "2026-08-13T17:15:36.919172+00:00",
+    "fault_end": "2026-08-13T17:17:06.921614+00:00"
+  },
+  "workload": {
+    "baseline": "1.02 rps, prompt 64-128tok, output 15-31tok, 8 shared prefixes",
+    "fault": "1.02 rps, prompt 64-128tok, output 15-31tok, unique prefixes",
+    "sent": 145,
+    "ok": 145,
+    "failed": 0,
+    "errors": {},
+    "ttft_p50_ms": 470.0,
+    "ttft_p95_ms": 23373.9,
+    "ttft_p99_ms": 28457.1
+  }
+}

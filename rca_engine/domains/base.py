@@ -119,6 +119,16 @@ class DomainSpec:
     concurrency_threshold_s:
         Layer 7 fallback onset gap when no calibrated propagation map covers
         an edge.  FChain's default is 2.0 s.
+    min_effect_size:
+        Minimum standardized shift, in baseline standard deviations, before a
+        detected change point counts as real.  ``0.0`` disables the gate.
+
+        Layers 1-4 ask whether a change is *statistically detectable*, never
+        whether it is *large enough to matter*.  That is fine for a cpu_hog,
+        which moves a metric by multiples, but not for an inference engine
+        whose histogram quantiles are computed from few samples at low request
+        rates — there, ordinary noise reliably produces change points and the
+        pipeline names a cause on a perfectly healthy run.
     component_from_labels:
         Maps a Prometheus series' labels to a component, for queries that
         leave ``MetricQuery.component`` unset.  Return ``None`` to drop the
@@ -132,6 +142,7 @@ class DomainSpec:
     exogenous: frozenset[str] = frozenset()
     sli_node: str | None = None
     concurrency_threshold_s: float = 2.0
+    min_effect_size: float = 0.0
     component_from_labels: Callable[[Mapping[str, str]], str | None] | None = None
 
     # -- helpers ---------------------------------------------------------

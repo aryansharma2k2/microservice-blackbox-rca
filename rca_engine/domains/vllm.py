@@ -310,6 +310,17 @@ VLLM = DomainSpec(
     # 2.0s default would lump nearly the whole graph into one concurrency
     # window. Calibrate properly in Phase 4.
     concurrency_threshold_s=0.5,
+    # Layers 1-4 test whether a change is detectable, never whether it is big
+    # enough to matter. On a verified-clean run — 1.02/1.02 rps, zero
+    # failures, no backlog growth — the pipeline still named a cause, because
+    # ordinary drift in a histogram quantile is easily "detectable" when the
+    # baseline is nearly constant. Requiring a 20-sigma shift removes that
+    # false positive while leaving real faults (which move 50-2000 sigmas)
+    # untouched.
+    #
+    # Calibrated against a single clean trace, so treat it as provisional:
+    # Phase 5 should refit it across the full set of clean runs.
+    min_effect_size=20.0,
 )
 
 _problems = VLLM.validate()

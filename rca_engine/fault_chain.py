@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 
-from rca_engine.change_point import run_layer1
+from rca_engine.change_point import ChangePointResult, run_layer1
 from rca_engine.dependency import has_path
 from rca_engine.domains import DEFAULT_DOMAIN, DomainSpec
 from rca_engine.logger import log_stage
@@ -317,6 +317,7 @@ def pinpoint_report(
                 step_seconds=step_seconds,
                 start_time=start_time,
                 logs=logs,
+                min_effect_size=spec.min_effect_size,
             )
             if metric_analysis is None:
                 continue
@@ -650,6 +651,7 @@ def _analyze_metric(
     force_window: int | None = None,
     start_time: float | None = None,
     logs: list[dict] | None = None,
+    min_effect_size: float = 0.0,
 ) -> tuple[list[int], list[str], list[float]] | None:
     """Run Layers 1-4 for a single metric of a single service.
  
@@ -698,7 +700,34 @@ def _analyze_metric(
     )
     if not result.change_points:
         return None
- 
+
+    # Effect-size gate. Drop change points that are detectable but too small
+    # to matter, before spending Layers 2-4 on them.
+    if min_effect_size > 0:
+        kept = [
+            cp for cp in result.change_points
+            if effect_size(baseline_data, fault_data, cp) >= min_effect_size
+        ]
+        if not kept:
+            logger.debug(
+                "%s.%s: %d change point(s) all below the %.1f-sigma effect "
+                "floor — treating as noise",
+                service, metric_name, len(result.change_points), min_effect_size,
+            )
+            return None
+        if len(kept) < len(result.change_points):
+            dropped = set(result.change_points) - set(kept)
+            result = ChangePointResult(
+                **{
+                    **result.__dict__,
+                    "change_points": kept,
+                    "directions": [
+                        d for cp, d in zip(result.change_points, result.directions)
+                        if cp not in dropped
+                    ],
+                }
+            )
+
     g = result.cusum_combined
     h = result.bootstrap_threshold
  
@@ -924,6 +953,40 @@ def _determine_trend(directions: list[str]) -> str:
     if downs > 0 and ups == 0:
         return "down"
     return "mixed"
+
+
+#: Floors for the effect-size denominator, as a fraction of the baseline mean
+#: and as an absolute value. Without them a series that is exactly constant in
+#: the baseline (std == 0) makes any later movement look infinitely large.
+_EFFECT_REL_FLOOR = 0.01
+_EFFECT_ABS_FLOOR = 1e-9
+
+
+def effect_size(
+    baseline_data: np.ndarray,
+    fault_data: np.ndarray,
+    change_point: int,
+) -> float:
+    """How big is the shift at *change_point*, in baseline sigmas?
+
+    Compares the post-change level against the baseline level, scaled by
+    baseline variability. Answers "is this shift meaningful?" — a separate
+    question from Layer 1's "is this shift detectable?", and the one that
+    decides whether an operator would care.
+
+    Returns 0.0 when there is not enough data on either side to judge.
+    """
+    after = fault_data[change_point:]
+    if after.size == 0 or baseline_data.size < 2:
+        return 0.0
+
+    baseline_mean = float(np.mean(baseline_data))
+    scale = max(
+        float(np.std(baseline_data)),
+        _EFFECT_REL_FLOOR * abs(baseline_mean),
+        _EFFECT_ABS_FLOOR,
+    )
+    return abs(float(np.mean(after)) - baseline_mean) / scale
 
 
 def _confidence(

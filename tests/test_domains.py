@@ -493,6 +493,69 @@ class TestVllmDomain:
         assert report.top()["service"] != "arrival_load"
 
 
+class TestEffectSizeGate:
+    """Layers 1-4 ask whether a change is *detectable*, never whether it is
+    *large enough to matter*. On a verified-clean vLLM run the pipeline still
+    named a cause, because ordinary drift in a histogram quantile is easily
+    detectable when the baseline is nearly constant. The gate is what stops
+    that, and Boutique must be unaffected by it.
+    """
+
+    def test_boutique_leaves_the_gate_off(self):
+        assert BOUTIQUE.min_effect_size == 0.0
+
+    def test_vllm_enables_the_gate(self):
+        assert VLLM.min_effect_size > 0
+
+    def test_effect_size_measures_shift_in_baseline_sigmas(self):
+        baseline = np.array([1.0, 1.1, 0.9, 1.0, 1.05, 0.95] * 4)
+        fault = np.concatenate([np.full(10, 1.0), np.full(10, 2.0)])
+        assert fault_chain.effect_size(baseline, fault, 10) > 10
+        # No shift at all -> no effect.
+        assert fault_chain.effect_size(baseline, np.full(20, 1.0), 10) < 1
+
+    def test_constant_baseline_does_not_produce_an_infinite_effect(self):
+        """A metric that never moves in the baseline has zero variance. Without
+        a floor on the denominator any later movement scores as infinite, and
+        the gate would pass everything."""
+        constant = np.full(20, 0.297)
+        moved = np.concatenate([np.full(10, 0.297), np.full(10, 0.30)])
+        effect = fault_chain.effect_size(constant, moved, 10)
+        assert np.isfinite(effect)
+
+    def test_all_zero_baseline_is_safe(self):
+        zeros = np.zeros(20)
+        assert np.isfinite(fault_chain.effect_size(zeros, np.zeros(20), 10))
+        assert np.isfinite(fault_chain.effect_size(zeros, np.ones(20), 10))
+
+    def test_too_little_data_scores_zero_rather_than_crashing(self):
+        assert fault_chain.effect_size(np.array([1.0]), np.ones(5), 0) == 0.0
+        assert fault_chain.effect_size(np.ones(10), np.ones(5), 5) == 0.0
+
+    def test_gate_suppresses_a_small_shift_but_keeps_a_large_one(self):
+        n_bl, n_ft = 20, 80
+
+        def matrix(step_to: float):
+            series = np.concatenate([
+                np.random.default_rng(0).normal(1.0, 0.05, n_bl + 10),
+                np.full(n_ft - 10, step_to),
+            ])
+            return {
+                c: {m: series.copy() for m in VLLM.component_metrics[c]}
+                if c == "queueing"
+                else {m: np.full(n_bl + n_ft, 1.0) for m in VLLM.component_metrics[c]}
+                for c in VLLM.component_graph
+            }
+
+        bl = (1000.0, 1000.0 + n_bl)
+        ft = (bl[1], bl[1] + n_ft)
+        gated = DomainSpec(**{**VLLM.__dict__, "min_effect_size": 20.0})
+
+        # A 3% shift is detectable but trivial; a 10x shift is not.
+        assert pinpoint_report(matrix(1.03), bl, ft, domain=gated).ranked == []
+        assert pinpoint_report(matrix(10.0), bl, ft, domain=gated).ranked != []
+
+
 class TestPinpointReportWrapper:
 
     def test_pinpoint_returns_the_reports_ranking(self):
