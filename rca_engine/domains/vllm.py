@@ -321,6 +321,17 @@ VLLM = DomainSpec(
     # Calibrated against a single clean trace, so treat it as provisional:
     # Phase 5 should refit it across the full set of clean runs.
     min_effect_size=20.0,
+    # "last_reset" estimates onset as where CUSUM evidence began accumulating.
+    # For any metric that starts drifting at the window edge that collapses to
+    # index ~0, so several mechanisms tie at +1s and the onset ordering Layers
+    # 6-8 depend on carries no information. On the prefix_diversity trace it
+    # put the effect (prefill_cost) ahead of its own cause.
+    #
+    # "crossing" uses the point where evidence became conclusive — a
+    # consistent definition across metrics, which is what *relative* ordering
+    # needs. It is biased later for small shifts, but the effect-size gate
+    # already removes those. Boutique keeps last_reset.
+    onset_estimator="crossing",
 )
 
 _problems = VLLM.validate()

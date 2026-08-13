@@ -120,20 +120,48 @@ class RcaReport:
     domain: str
 
     def top(self) -> dict[str, Any] | None:
-        """Highest-ranked component, or None when nothing was abnormal."""
-        return self.ranked[0] if self.ranked else None
+        """Highest-ranked component that could actually *be* the cause.
+
+        Entries carry ``eligible=False`` when the domain bars them from
+        root-cause candidacy — exogenous inputs, the SLI node, co-symptoms.
+        They stay in ``ranked`` as evidence, but returning one here would
+        answer "why is TTFT slow?" with "because TTFT is slow".
+
+        None when nothing eligible was abnormal.
+        """
+        return next((e for e in self.ranked if e.get("eligible", True)), None)
 
 
 def _classify(
     sorted_components: list[str],
     exogenous: frozenset[str],
     pinpointed: list[str],
+    excluded: frozenset[str] = frozenset(),
+    trends: dict[str, str] | None = None,
 ) -> str:
     """Decide how the ranked list should be read."""
     if not sorted_components:
         return VERDICT_NO_ANOMALY
-    if exogenous and sorted_components[0] in exogenous:
-        return VERDICT_CAPACITY
+
+    # Nothing that could *be* a cause moved.
+    if excluded and all(c in excluded for c in sorted_components):
+        # Inputs shifted and the system absorbed it: a workload change, not a
+        # defect. With nothing internal degraded there is nothing to fix.
+        if exogenous and any(c in exogenous for c in sorted_components):
+            return VERDICT_CAPACITY
+        # Only co-symptoms moved (the SLI, a leaf) with no eligible cause and
+        # no input to blame — there is no anomaly the graph can explain.
+        return VERDICT_NO_ANOMALY
+
+    first = sorted_components[0]
+    if exogenous and first in exogenous:
+        # Capacity means "asked for more than can be served", so it requires
+        # the input to have gone *up*. Arrival rate falling is the opposite:
+        # the server slowed down and the client could not push as much
+        # through — an effect of the fault, not its cause.
+        if trends is None or trends.get(first) != "down":
+            return VERDICT_CAPACITY
+
     if not pinpointed:
         return VERDICT_EXTERNAL
     return VERDICT_PATHOLOGY
@@ -318,6 +346,7 @@ def pinpoint_report(
                 start_time=start_time,
                 logs=logs,
                 min_effect_size=spec.min_effect_size,
+                onset_estimator=spec.onset_estimator,
             )
             if metric_analysis is None:
                 continue
@@ -406,12 +435,15 @@ def pinpoint_report(
             total_metrics=spec.metric_count(svc),
         )
         entry["rank"] = i
+        entry["eligible"] = svc not in excluded
         ranked_results.append(entry)
 
     # Sorted purely by onset, ignoring the pinpointed/victim grouping, so the
     # verdict reflects what genuinely moved first.
     by_onset = sorted(service_onsets, key=lambda s: service_onsets[s])
-    verdict = _classify(by_onset, spec.exogenous, pinpointed)
+    verdict = _classify(
+        by_onset, spec.exogenous, pinpointed, excluded, service_trends
+    )
     exogenous_drivers = [svc for svc in by_onset if svc in spec.exogenous]
 
     if ranked_results:
@@ -652,6 +684,7 @@ def _analyze_metric(
     start_time: float | None = None,
     logs: list[dict] | None = None,
     min_effect_size: float = 0.0,
+    onset_estimator: str = "last_reset",
 ) -> tuple[list[int], list[str], list[float]] | None:
     """Run Layers 1-4 for a single metric of a single service.
  
@@ -697,6 +730,7 @@ def _analyze_metric(
         k=cusum_k_factor,
         start_time=start_time,
         logs=logs,
+        onset_estimator=onset_estimator,
     )
     if not result.change_points:
         return None

@@ -141,7 +141,10 @@ def score_run(run_dir: Path) -> ReplayResult:
     """Diagnose a run and score it against its ground truth."""
     report, ground_truth = diagnose_run(run_dir)
 
-    ranked = [entry["service"] for entry in report.ranked]
+    # Score against components that could actually be the cause. Exogenous
+    # inputs and the SLI node appear in the ranking as evidence but are never
+    # valid answers, so counting them would flatter the numbers.
+    ranked = [e["service"] for e in report.ranked if e.get("eligible", True)]
     expected = ground_truth.get("root_cause")
     rank = ranked.index(expected) + 1 if expected in ranked else None
 

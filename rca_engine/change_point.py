@@ -274,11 +274,11 @@ def bootstrap_threshold(
 
 def _find_onset_via_last_reset(
     alarm_index: int,
-    g_combined: np.ndarray,
+    detector: np.ndarray,
 ) -> int:
     """
     Given that CUSUM crossed the threshold at alarm_index,
-    walk backward to find the last time g_combined was exactly 0.
+    walk backward to find the last time *detector* was exactly 0.
 
     This is the "last reset heuristic":
         The CUSUM score resets to 0 when accumulated evidence
@@ -286,12 +286,19 @@ def _find_onset_via_last_reset(
         to normal. The last reset before the alarm marks where
         the current run of abnormal evidence began.
 
+    *detector* must be the one-sided score that actually fired —
+    ``g_up`` for an upward change, ``g_down`` for a downward one.
+    Passing the combined score instead silently breaks the heuristic:
+    ``g_combined = max(g_up, g_down)`` is zero only when *both*
+    detectors are simultaneously zero, so under a sustained drift in
+    either direction it never resets and every onset collapses to 0.
+
     Returns onset_index = last_zero + 1
     (one step after the last reset = where accumulation restarted)
     """
     # Walk backward from alarm_index
     for j in range(alarm_index - 1, -1, -1):
-        if g_combined[j] == 0.0:
+        if detector[j] == 0.0:
             return j + 1  # One step after the last zero
 
     # If no zero found, the change started at or before index 0
@@ -303,6 +310,7 @@ def detect_crossings_and_onsets(
     g_down: np.ndarray,
     g_combined: np.ndarray,
     h: float,
+    onset_estimator: str = "last_reset",
 ) -> tuple[list[int], list[str]]:
     """
     Find all threshold crossings in g_combined,
@@ -340,8 +348,19 @@ def detect_crossings_and_onsets(
             while t < W and g_combined[t] >= h:
                 t += 1
 
-            # Estimate the true onset using last-reset heuristic
-            onset = _find_onset_via_last_reset(alarm_time, g_combined)
+            # Estimate the true onset using the last-reset heuristic, walking
+            # back through the detector that fired rather than the combined
+            # score — see _find_onset_via_last_reset.
+            if onset_estimator == "crossing":
+                # Where the evidence became conclusive. A consistent
+                # definition across metrics, which is what cross-metric onset
+                # ordering needs. Biased later for small effects, since they
+                # take longer to cross — the effect-size gate handles those.
+                onset = alarm_time
+            else:
+                onset = _find_onset_via_last_reset(
+                    alarm_time, g_up if direction == "up" else g_down
+                )
 
             onsets.append(onset)
             directions.append(direction)
@@ -411,6 +430,7 @@ def run_layer1(
     seed: int | None = None,
     start_time: float | None = None,
     logs: list[dict] | None = None,
+    onset_estimator: str = "last_reset",
 ) -> ChangePointResult:
     """
     Full Layer 1 pipeline for one metric on one VM.
@@ -465,7 +485,7 @@ def run_layer1(
 
     # ── Steps 5+6: Detect crossings and estimate onsets ──────────────────
     onsets, directions = detect_crossings_and_onsets(
-        g_up, g_down, g_combined, h
+        g_up, g_down, g_combined, h, onset_estimator=onset_estimator
     )
 
     # ── Step 7: Confidence scores ─────────────────────────────────────────

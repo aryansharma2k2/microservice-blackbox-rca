@@ -143,6 +143,7 @@ class DomainSpec:
     sli_node: str | None = None
     concurrency_threshold_s: float = 2.0
     min_effect_size: float = 0.0
+    onset_estimator: str = "last_reset"
     component_from_labels: Callable[[Mapping[str, str]], str | None] | None = None
 
     # -- helpers ---------------------------------------------------------
