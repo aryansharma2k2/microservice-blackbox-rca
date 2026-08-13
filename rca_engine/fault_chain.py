@@ -285,6 +285,13 @@ def pinpoint_report(
     stage_start = time.time()
     log_stage("START_PINPOINT", __file__, start_time, stage_start, logs)
 
+    # Pretrained Markov checkpoints exist only for the Boutique services, so
+    # every other domain logs a fallback warning per metric per run. That is
+    # expected, not a problem, and at evaluation scale it buries everything
+    # else.
+    if spec.name != "boutique":
+        logging.getLogger("rca_engine.markov_checkpoint").setLevel(logging.ERROR)
+
     if not metric_matrix:
         return empty
 

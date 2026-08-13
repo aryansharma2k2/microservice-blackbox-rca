@@ -1,10 +1,17 @@
 """Structured logging and timing for RCA pipeline stages."""
 
-import time
-from typing import Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def log_stage(stage, file, start_time, current_time, logs):
+    """Record the first occurrence of a pipeline stage.
+
+    Goes through logging rather than print: the evaluation calls the pipeline
+    once per captured run, and stage banners on stdout drown the results
+    table. Callers that want the timings still get them in ``logs``.
+    """
     if any(entry["stage"] == stage for entry in logs):
         return
 
@@ -16,4 +23,4 @@ def log_stage(stage, file, start_time, current_time, logs):
         "since_start_seconds": duration,
     })
 
-    print(f"[RCA] {stage:<25} (+{duration:.3f}s)")
+    logger.info("[RCA] %-25s (+%.3fs)", stage, duration)

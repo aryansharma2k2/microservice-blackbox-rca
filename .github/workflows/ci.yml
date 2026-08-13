@@ -1,0 +1,39 @@
+name: tests and accuracy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Unit tests
+        run: pytest tests/ -q
+
+      # The domain's metric names are a hypothesis until something checks them
+      # against a real server. The committed surface is that check, captured
+      # from vllm/vllm-openai-cpu serving Qwen3-0.6B.
+      - name: Metric surface has not drifted
+        run: |
+          python -m rca_engine.scripts.discover_metrics check vllm \
+            --surface deploy/vllm/metric_surface.json
+
+      - name: Experiment matrix is generated, not hand-edited
+        run: python -m rca_engine.scripts.gen_vllm_matrix --check
+
+      # Re-derive accuracy from the committed traces. No server, no GPU.
+      # An RCA project whose CI asserts its own diagnostic accuracy.
+      - name: Diagnostic accuracy has not regressed
+        run: python -m eval.run_eval traces/vllm --detail --min-top1 0.8
