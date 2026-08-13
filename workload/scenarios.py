@@ -178,6 +178,10 @@ class Scenario:
     caveat: str = ""
     #: Only runnable with a real GPU.
     requires_gpu: bool = False
+    #: False when the injector for this scenario does not exist yet.
+    #: Excluded from the generated matrix so a capture session does not
+    #: spend paid GPU hours on runs that cannot start.
+    implemented: bool = True
 
     def __post_init__(self) -> None:
         if self.kind not in (WORKLOAD, CONFIG, INFRA):
@@ -355,6 +359,10 @@ _SCENARIOS: tuple[Scenario, ...] = (
         infra_fault="gpu_cotenant",
         confounds_with=("long_prompt_burst",),
         requires_gpu=True,
+        # Needs a competing CUDA process on the same device. Docker alone
+        # cannot express that, and an untested injector is not worth
+        # spending paid GPU hours on.
+        implemented=False,
     ),
     # ---------------------------------------------------------------
     # Control
@@ -402,6 +410,7 @@ def scenarios_for(
     *,
     kind: str | None = None,
     gpu_available: bool = True,
+    include_unimplemented: bool = False,
 ) -> list[Scenario]:
     """Select runnable scenarios, optionally filtered by kind."""
     return [
@@ -409,6 +418,7 @@ def scenarios_for(
         for s in _SCENARIOS
         if (kind is None or s.kind == kind)
         and (gpu_available or not s.requires_gpu)
+        and (include_unimplemented or s.implemented)
     ]
 
 

@@ -139,12 +139,21 @@ def format_comparison(cards: dict[str, ScoreCard]) -> str:
     default=None,
     help="Exit non-zero if pipeline top-1 falls below this. For CI.",
 )
+@click.option(
+    "--min-runs",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Skip the --min-top1 gate below this many scored runs. An accuracy "
+    "floor asserted over a handful of runs measures noise, not regression.",
+)
 @click.option("--detail", is_flag=True, help="Print the per-scenario breakdown.")
 def main(
     path: Path,
     json_out: Path | None,
     include_invalid: bool,
     min_top1: float | None,
+    min_runs: int,
     detail: bool,
 ) -> None:
     """Score the pipeline and baselines over captured runs at PATH."""
@@ -179,10 +188,18 @@ def main(
         )
         click.echo(f"\nwrote {json_out}")
 
-    if min_top1 is not None and pipeline.top1 < min_top1:
+    if min_top1 is None:
+        return
+    if pipeline.runs < min_runs:
         click.echo(
-            f"\nFAIL: pipeline top-1 {pipeline.top1:.1%} is below the "
-            f"{min_top1:.1%} floor.",
+            f"\nAccuracy gate skipped: {pipeline.runs} scored run(s) is below "
+            f"the --min-runs {min_runs} needed for the number to mean anything."
+        )
+        return
+    if pipeline.top1 < min_top1:
+        click.echo(
+            f"\nFAIL: pipeline top-1 {pipeline.top1:.1%} over {pipeline.runs} "
+            f"runs is below the {min_top1:.1%} floor.",
             err=True,
         )
         sys.exit(1)

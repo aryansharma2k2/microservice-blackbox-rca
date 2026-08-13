@@ -131,31 +131,51 @@ def preflight(server_url: str, prometheus_url: str, strict: bool = True) -> None
 # ---------------------------------------------------------------------------
 
 
-def restart_server_with(server_args: tuple[str, ...], server_url: str) -> None:
-    """Restart the compose service with extra flags, then wait for health."""
-    extra = " ".join(server_args)
-    click.echo(f"  [inject] restarting server with: {extra}")
+def _active_service() -> tuple[str, str]:
+    """Which compose profile and service is actually running: (profile, service).
+
+    Detected rather than assumed — the same runner drives the CPU stack for
+    local development and the GPU stack for trace capture, and hardcoding
+    either would break every config-kind scenario on the other.
+    """
+    result = subprocess.run(
+        ["docker", "ps", "--filter", "name=vllm", "--format", "{{.Names}}"],
+        capture_output=True, text=True, check=True,
+    )
+    names = result.stdout.split()
+    if any("vllm-gpu" in n for n in names):
+        return "gpu", "vllm-gpu"
+    if any("vllm-cpu" in n for n in names):
+        return "cpu", "vllm-cpu"
+    raise click.ClickException(
+        "No vLLM container is running. Start the stack from deploy/vllm."
+    )
+
+
+def _recreate(extra_args: str, server_url: str) -> None:
+    profile, service = _active_service()
     subprocess.run(
-        ["docker", "compose", "--profile", "cpu", "up", "-d", "--force-recreate", "vllm-cpu"],
+        ["docker", "compose", "--profile", profile, "up", "-d",
+         "--force-recreate", service],
         cwd=COMPOSE_DIR,
-        env={**_compose_env(), "VLLM_EXTRA_ARGS": extra},
+        env={**_compose_env(), "VLLM_EXTRA_ARGS": extra_args},
         check=True,
         capture_output=True,
     )
     _wait_for_health(server_url)
+
+
+def restart_server_with(server_args: tuple[str, ...], server_url: str) -> None:
+    """Restart the server with extra flags, then wait for health."""
+    extra = " ".join(server_args)
+    click.echo(f"  [inject] restarting server with: {extra}")
+    _recreate(extra, server_url)
 
 
 def restore_server(server_url: str) -> None:
     """Restart the server back to its nominal configuration."""
     click.echo("  [recover] restoring nominal server config")
-    subprocess.run(
-        ["docker", "compose", "--profile", "cpu", "up", "-d", "--force-recreate", "vllm-cpu"],
-        cwd=COMPOSE_DIR,
-        env={**_compose_env(), "VLLM_EXTRA_ARGS": ""},
-        check=True,
-        capture_output=True,
-    )
-    _wait_for_health(server_url)
+    _recreate("", server_url)
 
 
 def _compose_env() -> dict:
@@ -177,20 +197,59 @@ def _wait_for_health(server_url: str, timeout_s: float = 600) -> None:
     )
 
 
-def start_infra_fault(fault: str, duration_s: int) -> subprocess.Popen:
-    """Launch the Chaos Mesh injector against the server container."""
-    click.echo(f"  [inject] chaos fault '{fault}' for {duration_s}s")
-    return subprocess.Popen(
-        [
-            sys.executable, str(CHAOS_INJECT),
-            "--fault", fault,
-            "--service", "vllm",
-            "--duration", str(duration_s),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+#: Fraction of its normal CPU allowance the server keeps under `cpu_hog`.
+#: The API server, tokenizer, and detokenizer run on CPU, so starving them
+#: spikes TTFT while the GPU and the KV cache sit idle — the confounder that
+#: breaks every cache-centric heuristic.
+CPU_HOG_QUOTA = "0.5"
+
+
+def _server_container(server_url: str) -> str:
+    """Name of the running vLLM container."""
+    result = subprocess.run(
+        ["docker", "ps", "--filter", "name=vllm", "--format", "{{.Names}}"],
+        capture_output=True, text=True, check=True,
     )
+    names = [n for n in result.stdout.split() if "vllm-cpu" in n or "vllm-gpu" in n]
+    if not names:
+        raise click.ClickException(
+            "Could not find the vLLM container. Infra faults need the "
+            "docker-compose stack from deploy/vllm."
+        )
+    return names[0]
+
+
+def start_infra_fault(fault: str, duration_s: int, server_url: str) -> str:
+    """Apply an infrastructure fault to the server container.
+
+    Uses Docker directly rather than Chaos Mesh: the vLLM stack is
+    docker-compose, and Chaos Mesh needs a Kubernetes cluster. The Boutique
+    domain still uses chaos_inject.py, which is where that tooling belongs.
+
+    Returns a token to pass to :func:`stop_infra_fault`.
+    """
+    container = _server_container(server_url)
+    if fault == "cpu_hog":
+        click.echo(f"  [inject] throttling {container} to {CPU_HOG_QUOTA} CPUs")
+        subprocess.run(
+            ["docker", "update", "--cpus", CPU_HOG_QUOTA, container],
+            check=True, capture_output=True,
+        )
+        return container
+    raise click.ClickException(
+        f"Infra fault '{fault}' is not implemented for the docker stack."
+    )
+
+
+def stop_infra_fault(fault: str, token: str) -> None:
+    """Undo an infrastructure fault."""
+    if fault == "cpu_hog":
+        click.echo(f"  [recover] restoring CPU allowance on {token}")
+        # 0 means unlimited.
+        subprocess.run(
+            ["docker", "update", "--cpus", "0", token],
+            check=False, capture_output=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +284,7 @@ def run_experiment(
     gt.write_scenario(run_id, scenario, fault_s, run_dir)
 
     generator = VllmWorkloadGenerator(base_url=server_url, seed=seed)
-    infra_proc: subprocess.Popen | None = None
+    infra_token: str | None = None
     events: dict[str, float] = {}
 
     try:
@@ -273,7 +332,7 @@ def run_experiment(
             generator.run(duration_seconds=fault_s + settle_s + 30, phase=scenario.fault)
             time.sleep(WARMUP_S)
         elif scenario.kind == INFRA:
-            infra_proc = start_infra_fault(scenario.infra_fault, fault_s)
+            infra_token = start_infra_fault(scenario.infra_fault, fault_s, server_url)
             generator.set_phase(scenario.fault)
         else:
             generator.set_phase(scenario.fault)
@@ -333,8 +392,8 @@ def run_experiment(
 
     finally:
         generator.stop()
-        if infra_proc is not None:
-            infra_proc.wait(timeout=60)
+        if infra_token is not None:
+            stop_infra_fault(scenario.infra_fault, infra_token)
         if scenario.kind == CONFIG:
             restore_server(server_url)
         click.echo(f"  [settle] {settle_s}s")
