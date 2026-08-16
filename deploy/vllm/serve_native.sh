@@ -94,18 +94,50 @@ start_vllm() {
 EOF
 }
 
+report_failure() {
+  # vLLM wraps every startup failure in "Engine core initialization failed.
+  # See root cause above." Printing the tail of the log therefore shows the
+  # wrapper and hides the cause, which is what made the first several failures
+  # here take a round trip each to diagnose. Dig out the real line instead.
+  echo >&2
+  echo "[native] vLLM did not come up. ROOT CAUSE:" >&2
+  echo "------------------------------------------------------------" >&2
+  grep -E "(Error|Exception|error:|assert)" "$RUN_DIR/vllm.log" 2>/dev/null \
+    | grep -viE "Engine core initialization failed|^\s*File |\^\^\^" \
+    | tail -6 >&2 || true
+  echo "------------------------------------------------------------" >&2
+  echo "[native] full log : $RUN_DIR/vllm.log" >&2
+  echo "[native] diagnose : bash deploy/vllm/doctor.sh" >&2
+  return 1
+}
+
 wait_healthy() {
-  echo -n "[native] waiting for vLLM"
+  local waited=0 last_line=""
+  echo "[native] waiting for vLLM (up to 20 min; first start downloads weights)"
   for _ in $(seq 1 120); do
     if curl -sf "http://localhost:${PORT}/health" >/dev/null 2>&1; then
-      echo " — healthy"; return 0
+      echo "[native] healthy after ${waited}s"; return 0
     fi
-    echo -n "."; sleep 10
+    # If the process is gone, stop waiting — it crashed, and every further
+    # second of dots is a second of a paid GPU doing nothing.
+    if ! pgrep -f "vllm serve" >/dev/null 2>&1; then
+      echo "[native] the vLLM process exited after ${waited}s." >&2
+      report_failure
+      return 1
+    fi
+    # Show real progress instead of dots, so a slow download is visibly
+    # distinguishable from a hang.
+    local line
+    line="$(tail -1 "$RUN_DIR/vllm.log" 2>/dev/null | cut -c1-100)"
+    if [ -n "$line" ] && [ "$line" != "$last_line" ]; then
+      printf '  [%3ds] %s\n' "$waited" "$line"
+      last_line="$line"
+    fi
+    sleep 10
+    waited=$((waited + 10))
   done
-  echo
-  echo "[native] vLLM did not come up. Last log lines:" >&2
-  tail -30 "$RUN_DIR/vllm.log" >&2
-  return 1
+  echo "[native] timed out after ${waited}s." >&2
+  report_failure
 }
 
 case "${1:-up}" in
