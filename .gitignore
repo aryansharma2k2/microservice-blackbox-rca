@@ -30,3 +30,5 @@ infra/boutique-manifests-patched.yaml
 # Secrets — never commit credentials
 credentials.txt
 *.secret
+native_state.json
+.run/

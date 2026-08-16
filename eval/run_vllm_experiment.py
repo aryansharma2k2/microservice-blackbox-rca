@@ -18,7 +18,8 @@ Injection depends on the scenario kind:
     Restart the server with degraded flags. Costs a warm-up and forces a
     longer settle, but constrains the mechanism directly.
 ``infra``
-    Hand off to the existing Chaos Mesh injector.
+    Starve the server of CPU, either by lowering the container's quota or
+    by spawning competing busy loops. See eval/server_control.py.
 
 Unlike the Boutique runner this does not trigger on an SLO breach. Every run
 uses fixed windows, so a scenario that fails to move TTFT still produces a
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -41,6 +43,7 @@ import requests
 
 import fault_injection.ground_truth as gt
 from eval.replay import score_run
+from eval.server_control import detect, wait_for_health
 from rca_engine import fault_chain
 from rca_engine.domains import VLLM
 from rca_engine.metrics_client import PrometheusMetricsClient
@@ -95,7 +98,10 @@ def preflight(server_url: str, prometheus_url: str, strict: bool = True) -> None
     except requests.exceptions.RequestException as exc:
         raise click.ClickException(
             f"vLLM is not healthy at {server_url}: {exc}\n"
-            f"Start it with: cd {COMPOSE_DIR} && docker compose --profile cpu up -d"
+            "Start it with one of:\n"
+            f"  bash {COMPOSE_DIR / 'serve_native.sh'} up        "
+            "# no Docker (RunPod Pods etc.)\n"
+            f"  cd {COMPOSE_DIR} && docker compose --profile gpu up -d"
         ) from exc
 
     try:
@@ -131,125 +137,46 @@ def preflight(server_url: str, prometheus_url: str, strict: bool = True) -> None
 # ---------------------------------------------------------------------------
 
 
-def _active_service() -> tuple[str, str]:
-    """Which compose profile and service is actually running: (profile, service).
-
-    Detected rather than assumed — the same runner drives the CPU stack for
-    local development and the GPU stack for trace capture, and hardcoding
-    either would break every config-kind scenario on the other.
-    """
-    result = subprocess.run(
-        ["docker", "ps", "--filter", "name=vllm", "--format", "{{.Names}}"],
-        capture_output=True, text=True, check=True,
-    )
-    names = result.stdout.split()
-    if any("vllm-gpu" in n for n in names):
-        return "gpu", "vllm-gpu"
-    if any("vllm-cpu" in n for n in names):
-        return "cpu", "vllm-cpu"
-    raise click.ClickException(
-        "No vLLM container is running. Start the stack from deploy/vllm."
-    )
+_CONTROL = None
 
 
-def _recreate(extra_args: str, server_url: str) -> None:
-    profile, service = _active_service()
-    subprocess.run(
-        ["docker", "compose", "--profile", profile, "up", "-d",
-         "--force-recreate", service],
-        cwd=COMPOSE_DIR,
-        env={**_compose_env(), "VLLM_EXTRA_ARGS": extra_args},
-        check=True,
-        capture_output=True,
-    )
-    _wait_for_health(server_url)
+def control():
+    """The server backend, detected once per process."""
+    global _CONTROL
+    if _CONTROL is None:
+        _CONTROL = detect(os.environ.get("VLLM_BACKEND"))
+        logger.info("Server backend: %s", _CONTROL.name)
+    return _CONTROL
 
 
 def restart_server_with(server_args: tuple[str, ...], server_url: str) -> None:
     """Restart the server with extra flags, then wait for health."""
-    extra = " ".join(server_args)
-    click.echo(f"  [inject] restarting server with: {extra}")
-    _recreate(extra, server_url)
+    click.echo(f"  [inject] restarting server with: {' '.join(server_args)}")
+    control().restart_with(server_args, server_url)
 
 
 def restore_server(server_url: str) -> None:
     """Restart the server back to its nominal configuration."""
     click.echo("  [recover] restoring nominal server config")
-    _recreate("", server_url)
+    control().restore(server_url)
 
 
-def _compose_env() -> dict:
-    import os
-
-    return dict(os.environ)
-
-
-def _wait_for_health(server_url: str, timeout_s: float = 600) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            requests.get(f"{server_url}/health", timeout=5).raise_for_status()
-            return
-        except requests.exceptions.RequestException:
-            time.sleep(5)
-    raise click.ClickException(
-        f"Server did not become healthy within {timeout_s:.0f}s of restart."
-    )
-
-
-#: Fraction of its normal CPU allowance the server keeps under `cpu_hog`.
-#: The API server, tokenizer, and detokenizer run on CPU, so starving them
-#: spikes TTFT while the GPU and the KV cache sit idle — the confounder that
-#: breaks every cache-centric heuristic.
-CPU_HOG_QUOTA = "0.5"
-
-
-def _server_container(server_url: str) -> str:
-    """Name of the running vLLM container."""
-    result = subprocess.run(
-        ["docker", "ps", "--filter", "name=vllm", "--format", "{{.Names}}"],
-        capture_output=True, text=True, check=True,
-    )
-    names = [n for n in result.stdout.split() if "vllm-cpu" in n or "vllm-gpu" in n]
-    if not names:
+def start_infra_fault(fault: str, duration_s: int, server_url: str):
+    """Apply an infrastructure fault to the server."""
+    if fault != "cpu_hog":
         raise click.ClickException(
-            "Could not find the vLLM container. Infra faults need the "
-            "docker-compose stack from deploy/vllm."
+            f"Infra fault '{fault}' is not implemented for the "
+            f"{control().name} backend."
         )
-    return names[0]
+    click.echo(f"  [inject] starving the server of CPU ({control().name})")
+    return control().start_cpu_hog()
 
 
-def start_infra_fault(fault: str, duration_s: int, server_url: str) -> str:
-    """Apply an infrastructure fault to the server container.
-
-    Uses Docker directly rather than Chaos Mesh: the vLLM stack is
-    docker-compose, and Chaos Mesh needs a Kubernetes cluster. The Boutique
-    domain still uses chaos_inject.py, which is where that tooling belongs.
-
-    Returns a token to pass to :func:`stop_infra_fault`.
-    """
-    container = _server_container(server_url)
-    if fault == "cpu_hog":
-        click.echo(f"  [inject] throttling {container} to {CPU_HOG_QUOTA} CPUs")
-        subprocess.run(
-            ["docker", "update", "--cpus", CPU_HOG_QUOTA, container],
-            check=True, capture_output=True,
-        )
-        return container
-    raise click.ClickException(
-        f"Infra fault '{fault}' is not implemented for the docker stack."
-    )
-
-
-def stop_infra_fault(fault: str, token: str) -> None:
+def stop_infra_fault(fault: str, token) -> None:
     """Undo an infrastructure fault."""
     if fault == "cpu_hog":
-        click.echo(f"  [recover] restoring CPU allowance on {token}")
-        # 0 means unlimited.
-        subprocess.run(
-            ["docker", "update", "--cpus", "0", token],
-            check=False, capture_output=True,
-        )
+        click.echo("  [recover] restoring CPU")
+        control().stop_cpu_hog(token)
 
 
 # ---------------------------------------------------------------------------
