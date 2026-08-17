@@ -176,11 +176,29 @@ def topology(
     return [c for c, _ in sorted(reach.items(), key=lambda kv: (-kv[1], kv[0]))]
 
 
+_llm_unavailable_logged = False
+
+
 def _llm(matrix, baseline_window, fault_window, spec, step=1.0):
-    """Imported lazily: the LLM baseline pulls in pydantic and, on a cache
-    miss, the anthropic SDK. The statistical baselines must stay runnable
-    without either."""
-    from eval.llm_baseline import llm
+    """Imported lazily, and tolerant of the import failing.
+
+    The LLM baseline needs pydantic and (on a cache miss) the anthropic SDK,
+    both in the optional `[llm]` extra. A deferred import is not enough on its
+    own — the module imports pydantic at the top — so catch ImportError here
+    and score an empty ranking. Scoring the whole corpus must never depend on
+    an optional dependency being installed.
+    """
+    global _llm_unavailable_logged
+    try:
+        from eval.llm_baseline import llm
+    except ImportError as exc:
+        if not _llm_unavailable_logged:
+            print(
+                f"  [llm baseline skipped: {exc}. Install with: "
+                'pip install -e ".[llm]"]'
+            )
+            _llm_unavailable_logged = True
+        return []
 
     return llm(matrix, baseline_window, fault_window, spec, step)
 

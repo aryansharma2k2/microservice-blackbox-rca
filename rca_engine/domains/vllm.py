@@ -354,9 +354,12 @@ VLLM = DomainSpec(
     # false positive while leaving real faults (which move 50-2000 sigmas)
     # untouched.
     #
-    # Calibrated against a single clean trace, so treat it as provisional:
-    # Phase 5 should refit it across the full set of clean runs.
-    min_effect_size=20.0,
+    # Refit against the 38-run GPU corpus (sweep over 0/2/5/8/20): 2.0 gives
+    # 36.8% top-1 and 73.7% top-3, against 34.2%/68.4% at the provisional 20.0
+    # fitted to a single CPU trace. The CPU faults moved 50-2000 sigmas, so a
+    # high floor cost nothing there; the GPU faults are far subtler and a
+    # 20-sigma floor suppressed roughly ten real detections outright.
+    min_effect_size=2.0,
     # "last_reset" estimates onset as where CUSUM evidence began accumulating.
     # For any metric that starts drifting at the window edge that collapses to
     # index ~0, so several mechanisms tie at +1s and the onset ordering Layers
@@ -368,6 +371,11 @@ VLLM = DomainSpec(
     # needs. It is biased later for small shifts, but the effect-size gate
     # already removes those. Boutique keeps last_reset.
     onset_estimator="crossing",
+    # Enabled on the strength of the corpus A/B, not the argument for it:
+    # at gate 2.0 it moves top-1 from 36.8% to 39.5%. It had measurably hurt
+    # on the two CPU traces available when it was written, which is why it
+    # shipped switched off.
+    compensate_lag=True,
 )
 
 _problems = VLLM.validate()

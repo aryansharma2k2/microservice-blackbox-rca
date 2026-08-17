@@ -11,6 +11,11 @@ import json
 import numpy as np
 import pytest
 
+# The LLM stage lives behind the optional [llm] extra. Skip the whole
+# module when it is absent rather than failing collection — the rest of
+# the suite must pass on a checkout without it.
+pytest.importorskip("pydantic", reason="install with: pip install -e '.[llm]'")
+
 from eval.baselines import BASELINES
 from eval.llm_baseline import CACHE_DIR, MODEL, Diagnosis, summarize_evidence
 from rca_engine.domains import VLLM
@@ -172,3 +177,23 @@ class TestExplainerSeparation:
 
         assert "never to re-diagnose" in SYSTEM
         assert "settled facts" in SYSTEM
+
+
+class TestOptionalDependency:
+    """`make eval` must work on a clean checkout without the [llm] extra."""
+
+    def test_missing_pydantic_does_not_break_the_eval(self, monkeypatch):
+        import builtins
+
+        import eval.baselines as baselines
+
+        real_import = builtins.__import__
+
+        def no_llm_module(name, *args, **kwargs):
+            if name.startswith("eval.llm_baseline") or name == "pydantic":
+                raise ImportError("No module named 'pydantic'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_llm_module)
+        monkeypatch.setattr(baselines, "_llm_unavailable_logged", False)
+        assert baselines.BASELINES["llm"](_matrix(), BL, FT, VLLM, 1.0) == []
