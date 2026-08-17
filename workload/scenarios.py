@@ -277,7 +277,16 @@ _SCENARIOS: tuple[Scenario, ...] = (
         # Constrains the cache directly rather than via total memory, so it
         # means the same thing on the CPU and GPU backends —
         # --gpu-memory-utilization is meaningless on CPU.
-        server_args=("--kv-cache-memory-bytes=268435456",),
+        #
+        # 1.5 GiB. Sized so the server is *tight*, not broken: a 7B at 8k
+        # context needs roughly 1 GB of KV per sequence, so this admits a
+        # couple of concurrent sequences and makes eviction and preemption
+        # routine. An earlier 256 MiB — carried over from a 0.6B CPU model and
+        # never re-derived for a 7B on a GPU — let the server accept requests
+        # it could never drain: the first real capture reached 720 queued
+        # requests at 1.6% cache usage and the engine died, taking the rest of
+        # the session with it.
+        server_args=("--kv-cache-memory-bytes=1610612736",),
         confounds_with=("qps_ramp", "long_output_burst"),
     ),
     Scenario(

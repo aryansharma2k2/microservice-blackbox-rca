@@ -67,6 +67,30 @@ class MetricQuery:
     component: str | None = None
     description: str = ""
     optional: bool = False
+    #: Width of the rate/quantile window this metric is computed over, in
+    #: seconds. ``0`` for an instantaneous gauge. See :meth:`lag_seconds`.
+    window_seconds: float = 0.0
+
+    @property
+    def lag_seconds(self) -> float:
+        """How long after a real change this metric reports it.
+
+        A value computed over ``[t-W, t]`` is a moving average: at the instant
+        something changes, the window still holds W seconds of the old
+        behaviour, so the reported value ramps rather than steps and crosses
+        any threshold roughly half a window late. A gauge has no such delay.
+
+        This matters because the pipeline ranks causes by onset order. In the
+        vLLM domain every exogenous input is a windowed rate while the
+        scheduler state is instantaneous gauges, so without compensation
+        *causes are systematically detected after their own effects* — a load
+        spike reads as an internal pathology, and a prefix-cache collapse gets
+        blamed on the cache pressure it produced.
+
+        Half the window is the expected offset for a step change, which is
+        what an injected fault is.
+        """
+        return self.window_seconds / 2.0
 
 
 def histogram_quantile(
@@ -119,6 +143,13 @@ class DomainSpec:
     concurrency_threshold_s:
         Layer 7 fallback onset gap when no calibrated propagation map covers
         an edge.  FChain's default is 2.0 s.
+    compensate_lag:
+        Subtract each metric's measurement lag from its detected onset
+        before ranking. Sound in principle — windowed metrics really do
+        report late, and the vLLM domain really does measure its causes
+        over windows and its effects with gauges — but it measurably hurt
+        accuracy on the traces available when it was written, so it is
+        off until an A/B over the full corpus says otherwise.
     min_effect_size:
         Minimum standardized shift, in baseline standard deviations, before a
         detected change point counts as real.  ``0.0`` disables the gate.
@@ -144,6 +175,7 @@ class DomainSpec:
     concurrency_threshold_s: float = 2.0
     min_effect_size: float = 0.0
     onset_estimator: str = "last_reset"
+    compensate_lag: bool = False
     component_from_labels: Callable[[Mapping[str, str]], str | None] | None = None
 
     # -- helpers ---------------------------------------------------------

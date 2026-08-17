@@ -366,8 +366,23 @@ def pinpoint_report(
 
             # Convert the earliest onset index into a POSIX timestamp and
             # track the minimum across all metrics for this service (Layer 5).
+            #
+            # Subtract the metric's own measurement lag first. A value computed
+            # over a rate or quantile window reports a change roughly half a
+            # window late, while a gauge reports it immediately. Layers 6-8
+            # rank purely on onset order, so leaving that uncorrected means a
+            # cause measured over a 30s window loses to an effect measured by
+            # a gauge — which is exactly how a load spike came to read as an
+            # internal pathology, and a prefix-cache collapse got blamed on
+            # the cache pressure it caused.
+            query = spec.metrics.get(metric_name)
+            lag = (
+                query.lag_seconds
+                if (spec.compensate_lag and query is not None)
+                else 0.0
+            )
             for idx in onset_indices:
-                ts = ft_start + idx * step_seconds
+                ts = ft_start + idx * step_seconds - lag
                 if earliest_onset is None or ts < earliest_onset:
                     earliest_onset = ts
 

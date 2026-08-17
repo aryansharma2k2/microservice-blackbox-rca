@@ -23,6 +23,13 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+# Needed only for the LLM-only baseline and the explainer stage. The
+# statistical pipeline and every other baseline run without them, and
+# cached LLM responses replay without an API key.
+llm = [
+    "anthropic>=0.116",
+    "pydantic>=2.0",
+]
 
 [project.scripts]
 rca = "rca_engine.__main__:main"

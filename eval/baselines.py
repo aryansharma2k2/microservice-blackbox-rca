@@ -176,8 +176,18 @@ def topology(
     return [c for c, _ in sorted(reach.items(), key=lambda kv: (-kv[1], kv[0]))]
 
 
+def _llm(matrix, baseline_window, fault_window, spec, step=1.0):
+    """Imported lazily: the LLM baseline pulls in pydantic and, on a cache
+    miss, the anthropic SDK. The statistical baselines must stay runnable
+    without either."""
+    from eval.llm_baseline import llm
+
+    return llm(matrix, baseline_window, fault_window, spec, step)
+
+
 BASELINES = {
     "threshold": threshold,
     "correlation": correlation,
     "topology": topology,
+    "llm": _llm,
 }

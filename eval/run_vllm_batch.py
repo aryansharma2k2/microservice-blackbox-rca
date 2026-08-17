@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import json
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import click
+import requests
 import yaml
 
 from eval.run_vllm_experiment import run_experiment
@@ -39,6 +41,7 @@ DEFAULT_OUT = ROOT / "traces" / "vllm"
 RESTART_OVERHEAD_S = 240
 
 _stop = False
+_stop_all = False
 
 
 def _handle_sigint(signum, frame) -> None:
@@ -118,6 +121,45 @@ def estimate_seconds(plan: list[Planned], defaults: dict) -> float:
     )
 
 
+#: Consecutive failures before the batch gives up. A dead server fails every
+#: remaining run in seconds, so without this a single crash silently converts
+#: the rest of a paid session into a stream of identical errors — which is
+#: exactly what happened on the first real capture: one crash, 32 failures,
+#: and the batch "finished" in 4.7h of an 8h budget.
+MAX_CONSECUTIVE_FAILURES = 3
+
+
+def server_healthy(server_url: str) -> bool:
+    try:
+        requests.get(f"{server_url}/health", timeout=5).raise_for_status()
+        return True
+    except requests.exceptions.RequestException:
+        return False
+
+
+def revive_server(server_url: str) -> bool:
+    """Try to bring a dead server back. Returns True if it came up.
+
+    Config-kind scenarios kill and relaunch the server; if a degraded flag
+    stops it from starting, both the restart and the restore can fail and the
+    process stays down. Recovering here means one bad scenario costs one
+    scenario, not the remainder of the session.
+    """
+    click.echo("  [batch] server is down — attempting restart")
+    script = ROOT / "deploy" / "vllm" / "serve_native.sh"
+    try:
+        subprocess.run(
+            ["bash", str(script), "up"],
+            check=True, capture_output=True, timeout=1800,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        click.echo(f"  [batch] restart failed: {type(exc).__name__}", err=True)
+        return False
+    ok = server_healthy(server_url)
+    click.echo(f"  [batch] server is {'back up' if ok else 'still down'}")
+    return ok
+
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--matrix", type=click.Path(exists=True, dir_okay=False, path_type=Path),
               default=DEFAULT_MATRIX, show_default=True)
@@ -140,6 +182,7 @@ def main(
     only: tuple[str, ...], dry_run: bool,
 ) -> None:
     """Capture the full labeled trace corpus."""
+    global _stop_all
     profile = PROFILES[profile_name]
     plan, defaults = build_plan(matrix, out, not no_gpu, resume=not no_resume)
     if only:
@@ -173,12 +216,12 @@ def main(
 
     signal.signal(signal.SIGINT, _handle_sigint)
     started = time.time()
-    done = failed = 0
+    done = failed = consecutive_failures = 0
 
     for planned in todo:
         scenario = apply_profile(get_scenario(planned.scenario), profile)
         for i in range(planned.todo):
-            if _stop:
+            if _stop or _stop_all:
                 break
             if max_runs is not None and done >= max_runs:
                 click.echo(f"\n[batch] reached --max-runs {max_runs}.")
@@ -193,6 +236,16 @@ def main(
                 f"{planned.scenario} ({i + 1}/{planned.todo})  "
                 f"elapsed {elapsed_h:.1f}h"
             )
+            if not server_healthy(server_url) and not revive_server(server_url):
+                click.echo(
+                    "\n[batch] server will not come back — stopping so the rest of "
+                    "the session is not spent on failing runs. Fix the server, then "
+                    "rerun this command; captured runs are skipped automatically.",
+                    err=True,
+                )
+                _stop_all = True
+                break
+
             try:
                 run_experiment(
                     scenario=scenario,
@@ -205,11 +258,22 @@ def main(
                     seed=i,
                 )
                 done += 1
+                consecutive_failures = 0
             except Exception as exc:  # noqa: BLE001 - one bad scenario must not
                 # cost the rest of a paid session
                 failed += 1
+                consecutive_failures += 1
                 click.echo(f"  [batch] run FAILED: {type(exc).__name__}: {exc}", err=True)
-        if _stop or (max_runs is not None and done >= max_runs):
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    click.echo(
+                        f"\n[batch] {consecutive_failures} runs failed in a row — "
+                        "stopping rather than burning the rest of the session. "
+                        "Captured runs are kept; rerun to resume.",
+                        err=True,
+                    )
+                    _stop_all = True
+                    break
+        if _stop or _stop_all or (max_runs is not None and done >= max_runs):
             break
         if budget_hours is not None and (time.time() - started) / 3600 >= budget_hours:
             break

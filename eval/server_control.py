@@ -42,7 +42,10 @@ SERVE_NATIVE = COMPOSE_DIR / "serve_native.sh"
 CPU_HOG_QUOTA = "0.5"
 CPU_HOG_WORKERS = max(2, (os.cpu_count() or 4) - 1)
 
-HEALTH_TIMEOUT_S = 900
+#: A 7B on an L4 becomes healthy in ~3.5 minutes with warm weights. 420s
+#: leaves generous margin while ensuring a server that cannot start costs
+#: one scenario's worth of time, not fifteen minutes per repeat.
+HEALTH_TIMEOUT_S = 420
 
 
 class ServerControl(Protocol):

@@ -57,7 +57,7 @@ experiments:
     root_cause: kv_cache_pressure
     expect_verdict: pathology
     requires_gpu: false
-    server_args: ['--kv-cache-memory-bytes=268435456']
+    server_args: ['--kv-cache-memory-bytes=1610612736']
 
   - scenario: queue_starved
     kind: config

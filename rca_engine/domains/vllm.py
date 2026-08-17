@@ -104,6 +104,11 @@ def _q(metric: str, quantile: float = Q) -> str:
     return histogram_quantile(metric, quantile, RATE_WINDOW)
 
 
+def _secs(window: str) -> float:
+    """'30s' -> 30.0"""
+    return float(window.rstrip("s"))
+
+
 METRICS: dict[str, MetricQuery] = {
     # -- exogenous inputs ------------------------------------------------
     "request_rate": MetricQuery(
@@ -293,6 +298,24 @@ MECHANISM_GRAPH: dict[str, list[str]] = {
     "decode_health": [],
     "ttft": [],
 }
+
+# Declare each metric's measurement window from the PromQL it actually uses,
+# so onset lag compensation cannot drift out of sync with the queries.
+for _name, _q_obj in list(METRICS.items()):
+    if f"[{RATE_WINDOW}]" in _q_obj.promql:
+        _w = _secs(RATE_WINDOW)
+    elif f"[{RATIO_WINDOW}]" in _q_obj.promql:
+        _w = _secs(RATIO_WINDOW)
+    else:
+        _w = 0.0  # instantaneous gauge
+    METRICS[_name] = MetricQuery(
+        promql=_q_obj.promql,
+        component=_q_obj.component,
+        description=_q_obj.description,
+        optional=_q_obj.optional,
+        window_seconds=_w,
+    )
+
 
 VLLM = DomainSpec(
     name="vllm",
