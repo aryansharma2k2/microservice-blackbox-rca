@@ -1,0 +1,17 @@
+{
+  "run_id": "20260817_104212",
+  "scenario": "queue_starved",
+  "domain": "vllm",
+  "expected": "queueing",
+  "expected_verdict": "pathology",
+  "predicted": "batch_composition",
+  "predicted_verdict": "pathology",
+  "rank_of_expected": 2,
+  "ranked": [
+    "batch_composition",
+    "queueing"
+  ],
+  "top1": false,
+  "top3": true,
+  "verdict_correct": true
+}

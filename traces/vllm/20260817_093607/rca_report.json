@@ -1,0 +1,14 @@
+{
+  "run_id": "20260817_093607",
+  "scenario": "clean",
+  "domain": "vllm",
+  "expected": null,
+  "expected_verdict": "no_anomaly",
+  "predicted": null,
+  "predicted_verdict": "no_anomaly",
+  "rank_of_expected": null,
+  "ranked": [],
+  "top1": true,
+  "top3": true,
+  "verdict_correct": true
+}

@@ -1,0 +1,41 @@
+{
+  "run_id": "20260817_101025",
+  "scenario": "kv_cache_starved",
+  "kind": "config",
+  "step_seconds": 1.0,
+  "baseline_valid": true,
+  "baseline_health": {
+    "offered_rps": 6.0,
+    "completed_rps": 5.97,
+    "in_flight": 30,
+    "backlog_growth": -0.02,
+    "failure_rate": 0.0,
+    "saturated": false
+  },
+  "windows": {
+    "baseline": [
+      1786961470.859563,
+      1786961590.85985
+    ],
+    "fault": [
+      1786961726.935101,
+      1786961906.935353
+    ]
+  },
+  "events": {
+    "baseline_start": "2026-08-17T10:11:10.859563+00:00",
+    "fault_start": "2026-08-17T10:15:26.935101+00:00",
+    "fault_end": "2026-08-17T10:18:26.935353+00:00"
+  },
+  "workload": {
+    "baseline": "6 rps, prompt 256-512tok, output 48-96tok, 8 shared prefixes",
+    "fault": "6 rps, prompt 256-512tok, output 48-96tok, 8 shared prefixes",
+    "sent": 1325,
+    "ok": 1325,
+    "failed": 0,
+    "errors": {},
+    "ttft_p50_ms": 181.5,
+    "ttft_p95_ms": 210.8,
+    "ttft_p99_ms": 213.5
+  }
+}
