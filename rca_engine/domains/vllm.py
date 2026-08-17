@@ -78,10 +78,23 @@ from rca_engine.domains.base import DomainSpec, MetricQuery, histogram_quantile
 #: Linux, which is where trace capture happens anyway.
 CONTAINER_SELECTOR = 'name=~".*vllm.*"'
 
-#: Rate window for counters and histogram buckets.  Wide enough that a p99 is
-#: meaningful at single-digit RPS, narrow enough that CUSUM still sees an
-#: onset promptly.  Revisit against real traces in Phase 4.
+#: Rate window for histogram buckets.  Wide enough that a p99 is meaningful at
+#: single-digit RPS, narrow enough that CUSUM still sees an onset promptly.
 RATE_WINDOW = "30s"
+
+#: Shorter window for counter *ratios*.
+#:
+#: A ratio over [t-W, t] is a moving average: it needs the whole window to
+#: elapse before it fully reflects a change. A gauge reports the same change
+#: instantly. With one shared 30s window that asymmetry inverts causality —
+#: on a real prefix_diversity run, `kv_cache_usage` (gauge) moved within
+#: ~2s while `prefix_cache_hit_rate` (30s ratio) took ~20s, so the effect
+#: out-raced its own cause and the pipeline blamed the cache pressure the
+#: cache failure had produced.
+#:
+#: Ratios need far fewer samples than quantiles do — a hit rate is stable over
+#: tens of requests where a p99 is not — so they can afford the shorter window.
+RATIO_WINDOW = "10s"
 
 #: Quantile used for the latency signals.  p99 is the SLI teams alert on.
 Q = 0.99
@@ -135,9 +148,9 @@ METRICS: dict[str, MetricQuery] = {
     ),
     "prefix_cache_hit_rate": MetricQuery(
         promql=(
-            f"sum(rate(vllm:prefix_cache_hits_total[{RATE_WINDOW}]))"
+            f"sum(rate(vllm:prefix_cache_hits_total[{RATIO_WINDOW}]))"
             " / "
-            f"clamp_min(sum(rate(vllm:prefix_cache_queries_total[{RATE_WINDOW}])), 1)"
+            f"clamp_min(sum(rate(vllm:prefix_cache_queries_total[{RATIO_WINDOW}])), 1)"
         ),
         component="prefix_cache_efficacy",
         description="Block-level prefix cache hit ratio. Collapses under "
@@ -145,9 +158,9 @@ METRICS: dict[str, MetricQuery] = {
     ),
     "cached_token_ratio": MetricQuery(
         promql=(
-            f"sum(rate(vllm:prompt_tokens_cached_total[{RATE_WINDOW}]))"
+            f"sum(rate(vllm:prompt_tokens_cached_total[{RATIO_WINDOW}]))"
             " / "
-            f"clamp_min(sum(rate(vllm:prompt_tokens_total[{RATE_WINDOW}])), 1)"
+            f"clamp_min(sum(rate(vllm:prompt_tokens_total[{RATIO_WINDOW}])), 1)"
         ),
         component="prefix_cache_efficacy",
         description="Fraction of prompt tokens served from cache. The "
