@@ -1,0 +1,44 @@
+{
+  "run_id": "20260817_004933",
+  "scenario": "long_prompt_burst",
+  "kind": "workload",
+  "step_seconds": 1.0,
+  "baseline_valid": true,
+  "baseline_health": {
+    "offered_rps": 6.0,
+    "completed_rps": 5.97,
+    "in_flight": 31,
+    "backlog_growth": 0.11,
+    "failure_rate": 0.0,
+    "saturated": false
+  },
+  "windows": {
+    "baseline": [
+      1786927818.543848,
+      1786927938.5440943
+    ],
+    "fault": [
+      1786927938.5449777,
+      1786928118.5491998
+    ]
+  },
+  "events": {
+    "baseline_start": "2026-08-17T00:50:18.543848+00:00",
+    "fault_start": "2026-08-17T00:52:18.544978+00:00",
+    "fault_end": "2026-08-17T00:55:18.549200+00:00"
+  },
+  "workload": {
+    "baseline": "6 rps, prompt 256-512tok, output 48-96tok, 8 shared prefixes",
+    "fault": "6 rps, prompt 8192-16384tok, output 48-96tok, 8 shared prefixes",
+    "sent": 1872,
+    "ok": 1052,
+    "failed": 820,
+    "errors": {
+      "HTTPError": 763,
+      "ConnectionError": 57
+    },
+    "ttft_p50_ms": 76652.2,
+    "ttft_p95_ms": 113266.5,
+    "ttft_p99_ms": 117791.4
+  }
+}

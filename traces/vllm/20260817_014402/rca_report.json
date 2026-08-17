@@ -1,0 +1,14 @@
+{
+  "run_id": "20260817_014402",
+  "scenario": "long_output_burst",
+  "domain": "vllm",
+  "expected": "kv_cache_pressure",
+  "expected_verdict": "capacity",
+  "predicted": null,
+  "predicted_verdict": "no_anomaly",
+  "rank_of_expected": null,
+  "ranked": [],
+  "top1": false,
+  "top3": false,
+  "verdict_correct": false
+}

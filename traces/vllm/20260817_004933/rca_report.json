@@ -1,0 +1,19 @@
+{
+  "run_id": "20260817_004933",
+  "scenario": "long_prompt_burst",
+  "domain": "vllm",
+  "expected": "prefill_cost",
+  "expected_verdict": "capacity",
+  "predicted": "kv_cache_pressure",
+  "predicted_verdict": "pathology",
+  "rank_of_expected": 4,
+  "ranked": [
+    "kv_cache_pressure",
+    "batch_composition",
+    "prefix_cache_efficacy",
+    "prefill_cost"
+  ],
+  "top1": false,
+  "top3": false,
+  "verdict_correct": false
+}

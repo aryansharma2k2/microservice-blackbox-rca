@@ -1,0 +1,16 @@
+{
+  "run_id": "20260817_012336",
+  "scenario": "long_output_burst",
+  "domain": "vllm",
+  "expected": "kv_cache_pressure",
+  "expected_verdict": "capacity",
+  "predicted": "preemption",
+  "predicted_verdict": "pathology",
+  "rank_of_expected": null,
+  "ranked": [
+    "preemption"
+  ],
+  "top1": false,
+  "top3": false,
+  "verdict_correct": false
+}

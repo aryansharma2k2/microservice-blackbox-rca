@@ -1,0 +1,44 @@
+{
+  "run_id": "20260817_022452",
+  "scenario": "bimodal_mix",
+  "kind": "workload",
+  "step_seconds": 1.0,
+  "baseline_valid": true,
+  "baseline_health": {
+    "offered_rps": 6.0,
+    "completed_rps": 8.0,
+    "in_flight": 31,
+    "backlog_growth": -143.09,
+    "failure_rate": 0.0,
+    "saturated": false
+  },
+  "windows": {
+    "baseline": [
+      1786933537.783118,
+      1786933657.7847126
+    ],
+    "fault": [
+      1786933657.7858226,
+      1786933837.7889333
+    ]
+  },
+  "events": {
+    "baseline_start": "2026-08-17T02:25:37.783118+00:00",
+    "fault_start": "2026-08-17T02:27:37.785823+00:00",
+    "fault_end": "2026-08-17T02:30:37.788933+00:00"
+  },
+  "workload": {
+    "baseline": "6 rps, prompt 256-512tok, output 48-96tok, 8 shared prefixes",
+    "fault": "6 rps, prompt 128-16384tok, output 48-96tok, 8 shared prefixes",
+    "sent": 1595,
+    "ok": 1103,
+    "failed": 492,
+    "errors": {
+      "HTTPError": 378,
+      "ConnectionError": 114
+    },
+    "ttft_p50_ms": 77634.2,
+    "ttft_p95_ms": 110222.2,
+    "ttft_p99_ms": 117878.3
+  }
+}

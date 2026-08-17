@@ -1,0 +1,41 @@
+{
+  "run_id": "20260817_002219",
+  "scenario": "qps_ramp",
+  "kind": "workload",
+  "step_seconds": 1.0,
+  "baseline_valid": true,
+  "baseline_health": {
+    "offered_rps": 6.0,
+    "completed_rps": 5.99,
+    "in_flight": 30,
+    "backlog_growth": -0.2,
+    "failure_rate": 0.0,
+    "saturated": false
+  },
+  "windows": {
+    "baseline": [
+      1786926184.9979012,
+      1786926304.9992573
+    ],
+    "fault": [
+      1786926305.000188,
+      1786926485.0003169
+    ]
+  },
+  "events": {
+    "baseline_start": "2026-08-17T00:23:04.997901+00:00",
+    "fault_start": "2026-08-17T00:25:05.000188+00:00",
+    "fault_end": "2026-08-17T00:28:05.000317+00:00"
+  },
+  "workload": {
+    "baseline": "6 rps, prompt 256-512tok, output 48-96tok, 8 shared prefixes",
+    "fault": "24 rps, prompt 256-512tok, output 48-96tok, 8 shared prefixes",
+    "sent": 4432,
+    "ok": 4432,
+    "failed": 0,
+    "errors": {},
+    "ttft_p50_ms": 15726.3,
+    "ttft_p95_ms": 24060.8,
+    "ttft_p99_ms": 24766.2
+  }
+}

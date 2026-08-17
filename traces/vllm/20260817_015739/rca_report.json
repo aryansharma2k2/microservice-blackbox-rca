@@ -1,0 +1,14 @@
+{
+  "run_id": "20260817_015739",
+  "scenario": "prefix_diversity",
+  "domain": "vllm",
+  "expected": "prefix_cache_efficacy",
+  "expected_verdict": "pathology",
+  "predicted": null,
+  "predicted_verdict": "no_anomaly",
+  "rank_of_expected": null,
+  "ranked": [],
+  "top1": false,
+  "top3": false,
+  "verdict_correct": false
+}

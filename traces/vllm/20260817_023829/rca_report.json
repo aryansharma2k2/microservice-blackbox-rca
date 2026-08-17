@@ -1,0 +1,14 @@
+{
+  "run_id": "20260817_023829",
+  "scenario": "bimodal_mix",
+  "domain": "vllm",
+  "expected": "batch_composition",
+  "expected_verdict": "capacity",
+  "predicted": null,
+  "predicted_verdict": "no_anomaly",
+  "rank_of_expected": null,
+  "ranked": [],
+  "top1": false,
+  "top3": false,
+  "verdict_correct": false
+}
