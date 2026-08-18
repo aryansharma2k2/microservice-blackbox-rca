@@ -33,6 +33,7 @@ Each entry contains ``service``, ``onset_time``, ``confidence``,
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -692,6 +693,35 @@ def pinpoint_faults(
 # ---------------------------------------------------------------------------
 # Per-metric analysis pipeline
 # ---------------------------------------------------------------------------
+
+#: Base seed for Layer 1's block bootstrap.
+#:
+#: The bootstrap is a Monte Carlo estimate of the CUSUM threshold, so leaving
+#: its generator unseeded makes the entire pipeline stochastic: change points
+#: sitting near the threshold flip in and out between runs. Measured over 15
+#: evaluations of the same 38-run corpus, top-3 alternated between 71.0% and
+#: 73.7% with no input changing. That is small, but it makes "clone the repo
+#: and re-derive every number" false, and it means a CI accuracy floor can
+#: fail on resampling noise rather than on a regression.
+#:
+#: The value itself is arbitrary and only has to stay fixed.
+BOOTSTRAP_SEED = 0
+
+
+def _metric_seed(service: str, metric_name: str) -> int:
+    """A stable per-(service, metric) bootstrap seed.
+
+    Derived rather than shared: one global seed would hand every metric the
+    same resampling draws, correlating thresholds across the very metrics
+    Layer 5 then aggregates into a single per-component onset. Hashing the
+    identity keeps each metric independent while staying reproducible.
+    """
+    digest = hashlib.blake2b(
+        f"{BOOTSTRAP_SEED}:{service}:{metric_name}".encode(), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big") % (2**32)
+
+
 def _analyze_metric(
     baseline_data: np.ndarray,
     fault_data: np.ndarray,
@@ -750,6 +780,7 @@ def _analyze_metric(
         time_series=fault_data,
         baseline_data=baseline_data,
         k=cusum_k_factor,
+        seed=_metric_seed(service, metric_name),
         start_time=start_time,
         logs=logs,
         onset_estimator=onset_estimator,

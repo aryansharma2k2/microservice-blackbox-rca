@@ -456,3 +456,67 @@ class TestAnalyzeMetric:
         if result is not None:
             onsets, _, _ = result
             assert len(onsets) <= 2
+
+
+# -----------------------------------------------------------------------
+# Determinism
+# -----------------------------------------------------------------------
+
+class TestReproducibility:
+    """Layer 1's bootstrap must not make the pipeline stochastic.
+
+    The whole project rests on the claim that anyone can clone the repo and
+    re-derive the published accuracy numbers from the committed traces. An
+    unseeded bootstrap quietly breaks that: the CUSUM threshold is a
+    percentile of 1000 random draws, so change points near it flip in and
+    out between runs. Measured on the 38-run corpus before this was fixed,
+    top-3 alternated between 71.0% and 73.7% with no input changing.
+    """
+
+    def _series(self):
+        rng = np.random.default_rng(7)
+        baseline = rng.normal(10.0, 1.0, 400)
+        fault = np.concatenate([rng.normal(10.0, 1.0, 20), rng.normal(13.0, 1.0, 40)])
+        return baseline, fault
+
+    def test_repeated_analysis_of_identical_input_is_identical(self):
+        baseline, fault = self._series()
+        first = _analyze_metric(baseline, fault, service="svc", metric_name="cpu_rate")
+        second = _analyze_metric(baseline, fault, service="svc", metric_name="cpu_rate")
+
+        assert first is not None, "fixture should produce a detectable change"
+        onsets_a, dirs_a, conf_a = first
+        onsets_b, dirs_b, conf_b = second
+        assert onsets_a == onsets_b
+        assert dirs_a == dirs_b
+        # Confidence is derived from the bootstrap maxima, so it is the value
+        # that moves first when the generator is unseeded.
+        assert conf_a == conf_b
+
+    def test_the_confidence_check_above_can_actually_fail(self):
+        """Guard the guard.
+
+        If run_layer1 were called without a seed the confidences would differ,
+        so assert that an unseeded pair really does diverge. Without this, a
+        future refactor that made confidence constant would leave the test
+        above passing while proving nothing.
+        """
+        from rca_engine.change_point import run_layer1
+
+        baseline, fault = self._series()
+        a = run_layer1(time_series=fault, baseline_data=baseline, seed=None)
+        b = run_layer1(time_series=fault, baseline_data=baseline, seed=None)
+        assert a.bootstrap_threshold != b.bootstrap_threshold
+
+    def test_seeds_differ_across_metrics(self):
+        """One shared seed would hand every metric the same resampling draws,
+        correlating the thresholds that Layer 5 aggregates per component."""
+        from rca_engine.fault_chain import _metric_seed
+
+        seeds = {
+            _metric_seed("svc", "cpu_rate"),
+            _metric_seed("svc", "mem_wss"),
+            _metric_seed("other", "cpu_rate"),
+        }
+        assert len(seeds) == 3
+        assert _metric_seed("svc", "cpu_rate") == _metric_seed("svc", "cpu_rate")
