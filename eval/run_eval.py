@@ -144,8 +144,16 @@ def format_comparison(cards: dict[str, ScoreCard]) -> str:
     type=int,
     default=0,
     show_default=True,
-    help="Skip the --min-top1 gate below this many scored runs. An accuracy "
-    "floor asserted over a handful of runs measures noise, not regression.",
+    help="Skip the gates below this many scored runs. An accuracy floor "
+    "asserted over a handful of runs measures noise, not regression.",
+)
+@click.option(
+    "--max-fpr",
+    type=float,
+    default=None,
+    help="Exit non-zero if the false-positive rate on clean runs exceeds "
+    "this. Guards the pipeline's strongest property: staying quiet when "
+    "nothing is wrong.",
 )
 @click.option("--detail", is_flag=True, help="Print the per-scenario breakdown.")
 def main(
@@ -154,6 +162,7 @@ def main(
     include_invalid: bool,
     min_top1: float | None,
     min_runs: int,
+    max_fpr: float | None,
     detail: bool,
 ) -> None:
     """Score the pipeline and baselines over captured runs at PATH."""
@@ -188,20 +197,34 @@ def main(
         )
         click.echo(f"\nwrote {json_out}")
 
-    if min_top1 is None:
+    if min_top1 is None and max_fpr is None:
         return
     if pipeline.runs < min_runs:
         click.echo(
-            f"\nAccuracy gate skipped: {pipeline.runs} scored run(s) is below "
-            f"the --min-runs {min_runs} needed for the number to mean anything."
+            f"\nGates skipped: {pipeline.runs} scored run(s) is below the "
+            f"--min-runs {min_runs} needed for the numbers to mean anything."
         )
         return
-    if pipeline.top1 < min_top1:
-        click.echo(
-            f"\nFAIL: pipeline top-1 {pipeline.top1:.1%} over {pipeline.runs} "
-            f"runs is below the {min_top1:.1%} floor.",
-            err=True,
+
+    failures = []
+    if min_top1 is not None and pipeline.top1 < min_top1:
+        failures.append(
+            f"top-1 {pipeline.top1:.1%} over {pipeline.runs} runs is below "
+            f"the {min_top1:.1%} floor"
         )
+    if (
+        max_fpr is not None
+        and pipeline.false_positive_rate is not None
+        and pipeline.false_positive_rate > max_fpr
+    ):
+        failures.append(
+            f"false-positive rate {pipeline.false_positive_rate:.1%} over "
+            f"{pipeline.clean_runs} clean runs exceeds the {max_fpr:.1%} ceiling"
+        )
+
+    if failures:
+        for message in failures:
+            click.echo(f"\nFAIL: pipeline {message}.", err=True)
         sys.exit(1)
 
 
