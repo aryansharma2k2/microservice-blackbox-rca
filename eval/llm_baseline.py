@@ -23,13 +23,30 @@ import hashlib
 import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from pydantic import BaseModel, Field
 
 from eval.baselines import _eligible, _is_flat, _split
 from rca_engine.domains import DomainSpec
+
+# pydantic is needed to *make* a call — it builds the response schema and
+# validates what comes back. It is not needed to *read* one: the cached
+# responses under traces/llm_cache were validated when they were written.
+#
+# Keeping the import hard made the whole module unimportable without the
+# optional [llm] extra, which silently dropped the LLM baseline to an empty
+# ranking on any machine that had not installed it — including CI, and
+# including anyone cloning the repo to check the published numbers. The
+# committed cache exists precisely so that `make eval` reproduces the table
+# with no API key; requiring an extra to read it defeats that.
+try:
+    from pydantic import BaseModel, Field
+
+    HAVE_PYDANTIC = True
+except ImportError:  # pragma: no cover - exercised by the no-extra install
+    HAVE_PYDANTIC = False
 
 logger = logging.getLogger(__name__)
 
@@ -40,22 +57,39 @@ CACHE_DIR = Path(__file__).parent.parent / "traces" / "llm_cache"
 MODEL = "claude-opus-5"
 
 
-class Diagnosis(BaseModel):
-    """Structured answer, so parsing never becomes the failure mode."""
+if HAVE_PYDANTIC:
 
-    # additionalProperties: false is required by structured outputs.
-    model_config = {"extra": "forbid"}
+    class Diagnosis(BaseModel):
+        """Structured answer, so parsing never becomes the failure mode."""
 
-    ranked_components: list[str] = Field(
-        description=(
-            "Candidate root causes, most likely first. Use only names from the "
-            "eligible list. Empty if nothing is wrong."
+        # additionalProperties: false is required by structured outputs.
+        model_config = {"extra": "forbid"}
+
+        ranked_components: list[str] = Field(
+            description=(
+                "Candidate root causes, most likely first. Use only names from "
+                "the eligible list. Empty if nothing is wrong."
+            )
         )
-    )
-    verdict: str = Field(
-        description="One of: pathology, capacity, no_anomaly, external."
-    )
-    reasoning: str = Field(description="Two or three sentences of justification.")
+        verdict: str = Field(
+            description="One of: pathology, capacity, no_anomaly, external."
+        )
+        reasoning: str = Field(description="Two or three sentences of justification.")
+
+else:
+
+    @dataclass
+    class Diagnosis:  # type: ignore[no-redef]
+        """Read-only stand-in with the same shape, for replaying the cache.
+
+        Deliberately not a validator. Anything that would need validation --
+        an actual model response -- cannot be produced without the SDK anyway,
+        and `diagnose` refuses that path with a clear message.
+        """
+
+        ranked_components: list[str]
+        verdict: str = ""
+        reasoning: str = ""
 
 
 SYSTEM = """\
@@ -146,6 +180,16 @@ def diagnose(prompt: str, use_cache: bool = True) -> Diagnosis | None:
         logger.warning(
             "anthropic SDK not installed and no cached response — skipping the "
             "LLM baseline. Install with: pip install -e '.[llm]'"
+        )
+        return None
+
+    if not HAVE_PYDANTIC:
+        # Reaching here means a cache miss on a machine that cannot build the
+        # response schema. Scoring a partial LLM row would be worse than
+        # scoring none, so say so and skip rather than half-answer.
+        logger.warning(
+            "pydantic not installed and this prompt is not cached — skipping "
+            "the LLM baseline. Install with: pip install -e '.[llm]'"
         )
         return None
 
