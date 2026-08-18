@@ -535,12 +535,11 @@ function renderQuiescence(data) {
   if (!node || !q) return;
   node.innerHTML =
     `On <strong>${q.contaminatedRuns} of ${q.quietRuns + q.contaminatedRuns}</strong> ` +
-    `scored runs the SLI was already more than ${q.ratioThreshold}&times; its own ` +
-    `median when the baseline window opened. Top-1 on those runs is ` +
-    `<strong>${pct(q.contaminatedTop1)}</strong>. On the ${q.quietRuns} runs that ` +
-    `did start quiet it is <strong>${pct(q.quietTop1)}</strong> — so this one ` +
-    `defect in the capture protocol, not the ranking logic, accounts for much ` +
-    `of the gap between the headline number and what the method does on clean input.`;
+    `scored runs, TTFT was already more than ${q.ratioThreshold}&times; its own median ` +
+    `when the baseline window opened. Top-1 on those runs is ` +
+    `<strong>${pct(q.contaminatedTop1)}</strong>. On the ${q.quietRuns} runs that did ` +
+    `start quiet it is <strong>${pct(q.quietTop1)}</strong>. So a flaw in how the runs ` +
+    `were captured, not in the ranking, explains much of the gap.`;
 }
 
 function renderHero(data) {

@@ -32,20 +32,18 @@
           <p class="eyebrow">vLLM · Prometheus · no code changes, no profiler, no traces</p>
           <h1>When p99 TTFT spikes, <em>which subsystem did it?</em></h1>
           <p class="lede">
-            Time-to-first-token is the SLI every LLM-serving team alerts on and
-            nobody can attribute. The suspects — KV&nbsp;cache pressure, batch
-            scheduling, prefix-cache collapse, preemption — share symptoms and
-            cause one another. Preemption is simultaneously a cause of latency
-            and an effect of cache pressure, so correlation implicates both and
-            separates neither.
+            Every LLM-serving team alerts on time-to-first-token. Almost
+            nobody can say what made it spike. There are four usual suspects:
+            KV&nbsp;cache pressure, batch scheduling, prefix-cache collapse,
+            and preemption. They look nearly identical from the outside, and
+            each one can cause the others.
           </p>
           <p class="lede">
-            This is an eight-layer change-point pipeline pointed at the inside
-            of one process, localizing among <strong>mechanisms</strong> rather
-            than across services. Scored on
-            <span data-bind="runsScored">—</span> labelled runs captured on a
-            real L4 GPU, against three classical baselines and Claude Opus&nbsp;5
-            given identical evidence.
+            So this is an eight-layer change-point pipeline pointed at the
+            inside of one process. It ranks <strong>mechanisms</strong>, not
+            services. Scored on <span data-bind="runsScored">—</span> labelled
+            runs from a real L4 GPU, against three simple baselines and against
+            Claude Opus&nbsp;5 given the same evidence.
           </p>
           <div class="hero-actions">
             <a class="btn primary" href="#result">See the numbers</a>
@@ -61,12 +59,12 @@
           </figcaption>
           <div id="hero-chart" class="chart-host"></div>
           <p class="panel-foot">
-            Every request carries a unique prefix, so the cache stops helping —
-            hit rate falls from 97% to zero and TTFT doubles. Occupancy and
+            Every request carries a unique prefix, so the cache stops helping.
+            Hit rate falls from 97% to zero and TTFT doubles. Occupancy and
             batch size move too. The pipeline names the prefix cache at
-            +3&nbsp;s, ahead of cache pressure at +4&nbsp;s and batch
-            composition at +6&nbsp;s, both of which sit downstream of it. Onset
-            <em>ordering</em> is the whole signal.
+            +3&nbsp;s. Cache pressure follows at +4&nbsp;s, batch composition
+            at +6&nbsp;s. Both are downstream of it. What moved
+            <em>first</em> is the whole signal.
           </p>
         </figure>
       </section>
@@ -101,27 +99,29 @@
           <p class="eyebrow">Measured, not asserted</p>
           <h2>Does eight layers of statistics beat the obvious thing?</h2>
           <p class="sub">
-            A top-1 number alone says nothing about whether the complexity is
-            earned. Every method below sees the same evidence from the same
-            <span data-bind="runsScored">—</span> runs and is scored identically.
-            <strong>Threshold alerting wins top-1.</strong> It is also useless
-            past rank&nbsp;1 — which is the honest shape of this result.
+            A top-1 number alone tells you nothing about whether eight layers
+            were worth writing. Every method below sees the same evidence, from
+            the same <span data-bind="runsScored">—</span> runs, scored the same
+            way. <strong>Threshold alerting wins top-1.</strong> It is also
+            useless past its first guess. That is the honest shape of the
+            result.
           </p>
         </div>
         <div id="methods" class="methods"></div>
         <div class="callout">
           <h3>How to read this</h3>
           <p>
-            <strong>Threshold alerting</strong> fires runbook rules in order, so
-            its first guess is decent and its second is noise — top-3 never
-            improves on top-1. <strong>Correlation</strong> ties the pipeline on
-            top-1 and loses 13 points of top-3, exactly as predicted: it cannot
-            separate a cause from its own effect. <strong>Topology</strong>
-            ignores telemetry entirely and names something on every clean run —
-            the floor any real method has to clear. <strong>Claude Opus 5</strong>,
-            given the same per-component before/after evidence, is genuinely
-            competitive — but it never sees onset timing, and onset ordering is
-            the pipeline's whole edge.
+            <strong>Threshold alerting</strong> fires runbook rules in order.
+            Its first guess is decent. Its second is noise, which is why its
+            top-3 never improves on its top-1.
+            <strong>Correlation</strong> ties on top-1 and loses 13 points of
+            top-3. That is exactly what it should do: it cannot separate a
+            cause from its own effect. <strong>Topology</strong> ignores the
+            telemetry completely and still clears 58% top-3, which is the floor
+            any real method has to beat. It also names something on every clean
+            run. <strong>Claude Opus 5</strong> is genuinely competitive on the
+            same evidence. The gap is that it never sees onset timing, and
+            onset timing is what the pipeline ranks by.
           </p>
         </div>
       </section>
@@ -132,20 +132,21 @@
           <p class="eyebrow">The reframe</p>
           <h2>An inference server is one service — so localize inside it</h2>
           <p class="sub">
-            A naive port of microservice RCA leaves the dependency layers with
-            nothing to operate on. The vLLM scheduler has real internal causal
-            structure that forms a DAG, so the localization domain changes from
-            <em>services</em> to <em>mechanisms</em>. The statistical core needs
-            zero modification; only the metric registry and this graph are
-            domain-specific.
+            An inference server is a single process. There are no services to
+            rank, so a straight port of microservice RCA has nothing to work
+            with. The fix is to rank <em>mechanisms</em> instead. Cache
+            occupancy drives preemption, preemption drives queueing, queueing
+            drives TTFT. That is a real causal graph. The statistical core
+            needed no changes at all: only this graph and the metric list are
+            specific to vLLM.
           </p>
         </div>
         <div class="graph-wrap">
           <div id="mechanism-graph" class="graph-host"></div>
           <aside class="graph-legend">
-            <p><span class="key exo"></span><strong>Exogenous</strong> — uncontrolled input. Load causes everything, so a naive onset ranking blames it for every incident. These nodes can drive a <em>capacity</em> verdict but are never named as a pathology.</p>
-            <p><span class="key sli"></span><strong>SLI</strong> — the sink being explained. Excluded from its own root-cause list, so the engine cannot answer &ldquo;TTFT is slow because TTFT is slow.&rdquo;</p>
-            <p><span class="key mech"></span><strong>Mechanism</strong> — a subsystem state backed by one or more Prometheus series. Hover any node for its metrics.</p>
+            <p><span class="key exo"></span><strong>Exogenous.</strong> An input you do not control. Traffic always moves first, so ranking purely by what moved first would blame load for everything. These nodes can still produce a <em>capacity</em> verdict, but are never named as a fault.</p>
+            <p><span class="key sli"></span><strong>SLI.</strong> The thing being explained. It is excluded from its own suspect list, so the engine cannot answer &ldquo;TTFT is slow because TTFT is slow.&rdquo;</p>
+            <p><span class="key mech"></span><strong>Mechanism.</strong> A subsystem, backed by one or more Prometheus series. Hover a node to see its metrics.</p>
             <p class="fine">Graph rendered from <code>DomainSpec.component_graph</code> — the same object the ranking layers consume, so the picture cannot drift from the code.</p>
           </aside>
         </div>
@@ -157,8 +158,8 @@
           <p class="eyebrow">Three real runs</p>
           <h2>A win, an argument, and a silence</h2>
           <p class="sub">
-            Replayed from committed Parquet. Every series below is measured
-            telemetry; the dashed line is where the fault window opens.
+            Replayed from committed Parquet. Every line below is measured
+            telemetry. The dashed marker is where the fault window opens.
           </p>
         </div>
         <div id="case-list" class="cases"></div>
@@ -170,32 +171,34 @@
           <p class="eyebrow">The part most projects omit</p>
           <h2>Where it fails, and why</h2>
           <p class="sub">
-            Rows are the injected mechanism; columns are what the pipeline
-            named. A perfect diagnoser is diagonal. This one is not, and the
-            off-diagonal mass has a single dominant explanation.
+            Rows are what was injected. Columns are what the pipeline named.
+            A perfect diagnoser is a diagonal line. This one is not, and the
+            misses have a single dominant cause.
           </p>
         </div>
         <div id="confusion" class="confusion-wrap"></div>
         <div class="callout warn">
           <h3>Measurement modality outranks causality</h3>
           <p>
-            The pipeline ranks by onset order, and onset is measured from the
-            telemetry — not from the event. Gauges like
-            <code>kv_cache_usage_perc</code> and <code>num_requests_running</code>
-            report their new value on the very next scrape. Windowed rates and
-            histogram quantiles — <code>rate(...[30s])</code>,
-            <code>histogram_quantile</code> over buckets — only reach their new
-            value after the window fills, roughly half a window late.
+            The pipeline ranks by what moved first. But it reads
+            &ldquo;first&rdquo; from the telemetry, not from the event itself.
+            Gauges report immediately: <code>kv_cache_usage_perc</code> and
+            <code>num_requests_running</code> show their new value on the very
+            next scrape. Windowed rates and histogram quantiles do not. They
+            only reach their new value once the window has filled, roughly half
+            a window late.
           </p>
           <p>
-            So a gauge-backed <em>effect</em> systematically appears to precede
-            its own rate-backed <em>cause</em>. That is why
-            <code>kv_cache_pressure</code> and <code>batch_composition</code>
-            absorb most of the off-diagonal mass: they are the two mechanisms
-            read from instantaneous gauges. The pipeline compensates by shifting
-            each series back by half its window, worth +2.7 points of top-1 when
-            A/B'd on this corpus — but it is a correction, not a cure. Fixing
-            this properly means changing what is measured, not how it is ranked.
+            So an effect read from a gauge beats its own cause read from a
+            rate. Two mechanisms here are read from gauges:
+            <code>kv_cache_pressure</code> and <code>batch_composition</code>.
+            Those are exactly the two columns collecting the misses.
+          </p>
+          <p>
+            The pipeline shifts each series back by half its window to
+            compensate, which is worth 2.7 points of top-1 on this corpus. It
+            is a patch, not a fix. Fixing it properly means changing what gets
+            measured, not how it gets ranked.
           </p>
         </div>
         <div id="scenarios" class="scenario-table"></div>
@@ -204,37 +207,36 @@
           <h3>A quarter of the corpus never had a clean baseline</h3>
           <p id="quiescence-copy">—</p>
           <p>
-            The capture protocol runs baseline, inject, fault, repeat. When the
-            previous run's load has not finished draining, the baseline window
-            opens with p99 TTFT already two orders of magnitude above its own
-            median. Layer&nbsp;1 calibrates its mean and standard deviation from
-            that window, so an inflated sigma desensitizes the detector and
-            nothing in the fault window clears threshold. The existing validity
-            check passes these runs — it looks at offered-versus-completed
-            throughput and backlog growth, and by those measures the load
-            generator was healthy; the server was simply still working off the
-            last incident.
+            Each run records a baseline, injects a fault, then records the
+            fault window. Sometimes the previous run's load had not finished
+            draining. When that happens, the baseline window opens with p99
+            TTFT already a hundred times its own median.
           </p>
           <p>
-            The headline number above counts all
-            <span data-bind="runsScored">—</span> runs anyway. Dropping a
-            quarter of a corpus raises the score, and a change like that should
-            be argued in the open rather than applied quietly — so it is
-            reported here and left out of the totals.
+            That breaks the detector. Layer&nbsp;1 works out a mean and a
+            standard deviation from the baseline window. A huge standard
+            deviation means nothing in the fault window ever looks unusual
+            enough to flag. The validity check passes these runs because it only
+            asks whether the load generator was keeping up. It was. The server
+            was just still busy with the last incident.
+          </p>
+          <p>
+            The headline number counts all <span data-bind="runsScored">—</span>
+            runs anyway. Dropping a quarter of your corpus raises your score.
+            That is a move you make in the open or not at all.
           </p>
         </div>
 
         <div class="callout">
           <h3>The SLI is coarsely bucketed</h3>
           <p>
-            <code>vllm:time_to_first_token_seconds</code> is a Prometheus
-            histogram, and p99 is interpolated from its buckets. Across these
-            traces the quantile spends most of its time pinned to two values —
-            0.248&nbsp;s and 159.2&nbsp;s — which are bucket edges, not
-            measurements. Small genuine TTFT movements are therefore invisible,
-            and the SLI reads as a step function rather than a curve. Anything
-            finer needs either custom bucket boundaries at deploy time or
-            per-request timings the metrics endpoint does not expose.
+            <code>vllm:time_to_first_token_seconds</code> is a histogram, and
+            p99 is interpolated from its buckets. Across these traces the
+            quantile spends most of its time stuck on two values,
+            0.248&nbsp;s and 159.2&nbsp;s. Those are bucket edges, not
+            measurements. Real but small TTFT movements are invisible, and the
+            SLI reads as a staircase instead of a curve. Getting finer detail
+            means setting custom bucket boundaries at deploy time.
           </p>
         </div>
       </section>
@@ -249,7 +251,7 @@
           <li>
             <span class="stage-n">1</span>
             <h3>CUSUM + block bootstrap</h3>
-            <p>Find candidate change points per metric. The detection threshold is calibrated empirically — the 95th percentile of 1000 block-bootstrap resamples of the baseline — rather than assumed. Seeded per <code>(component, metric)</code>, so the whole pipeline is reproducible.</p>
+            <p>Find candidate change points in each metric. The detection threshold is measured, not assumed: it is the 95th percentile of 1000 resamples of the baseline. Seeded per component and metric, so results are reproducible.</p>
           </li>
           <li>
             <span class="stage-n">2</span>
@@ -264,7 +266,7 @@
           <li>
             <span class="stage-n">4</span>
             <h3>Tangent rollback</h3>
-            <p>A detector fires <em>after</em> the trend starts. Roll each crossing back along its tangent to estimate when the deviation actually began — the number every later layer depends on.</p>
+            <p>A detector fires <em>after</em> a trend starts. Roll each crossing back along its tangent to estimate when the deviation really began. Every later layer depends on that number.</p>
           </li>
           <li>
             <span class="stage-n">5</span>
@@ -274,7 +276,7 @@
           <li>
             <span class="stage-n">6</span>
             <h3>Exogenous check &amp; verdict</h3>
-            <p>If the earliest onset is an exogenous node and load is climbing, the answer is <em>capacity</em> — you are overloaded, nothing is broken. If load is flat and an internal node fires first, it is a <em>pathology</em>. Distinguishing these is the difference between &ldquo;add a replica&rdquo; and &ldquo;fix your config.&rdquo;</p>
+            <p>Say the first thing to move is an input you do not control, and load is climbing. The answer is <em>capacity</em>: you are overloaded, nothing is broken. Now say load is flat and something internal moves first. That is a <em>pathology</em>. One means add a replica. The other means fix your config.</p>
           </li>
           <li>
             <span class="stage-n">7</span>
@@ -284,17 +286,18 @@
           <li>
             <span class="stage-n">8</span>
             <h3>Dependency filter</h3>
-            <p>Demote any mechanism the graph explains as propagation from something earlier. This is what stops the engine from reporting a symptom chain as five separate root causes.</p>
+            <p>Demote any mechanism the graph already explains as knock-on from something earlier. This stops the engine reporting one symptom chain as five separate faults.</p>
           </li>
         </ol>
         <div class="callout">
           <h3>The effect-size gate</h3>
           <p>
-            Layers&nbsp;1–4 test whether a change is <em>detectable</em>, never
-            whether it is <em>large</em>. On a quiet server that means a metric
-            wobbling by a hundredth of a percent produces a confident change
-            point. A minimum effect size, refit against this GPU corpus rather
-            than guessed, gates candidates before the expensive layers run.
+            Layers&nbsp;1&ndash;4 ask whether a change is <em>detectable</em>.
+            They never ask whether it is <em>large</em>. On a quiet server a
+            metric wobbling by a hundredth of a percent produces a confident
+            change point. So a minimum effect size filters candidates before the
+            expensive layers run. The threshold was fitted against this corpus,
+            not guessed.
           </p>
         </div>
       </section>
@@ -305,17 +308,18 @@
           <p class="eyebrow">Second substrate</p>
           <h2>The same engine, on eleven microservices</h2>
           <p class="sub">
-            The engine began as microservice RCA over Google Online Boutique —
-            cAdvisor telemetry, Chaos Mesh fault injection, eleven services on
-            Kubernetes. Retargeting it at vLLM meant writing a domain adapter,
-            not a new pipeline: the metric registry and the graph below are
-            domain-specific, and layers&nbsp;1&ndash;8 are untouched.
+            The engine started as microservice RCA over Google Online
+            Boutique: cAdvisor telemetry, Chaos Mesh fault injection, eleven
+            services on Kubernetes. Retargeting it at vLLM meant writing a
+            domain adapter, not a new pipeline. Only the metric list and the
+            graph below are domain-specific. Layers&nbsp;1&ndash;8 never
+            changed.
           </p>
           <p class="sub">
-            It is shown here as evidence that the core generalizes across two
-            unrelated causal substrates &mdash; <strong>not</strong> as a second
-            result. There is no labelled fault corpus for this domain and
-            therefore no accuracy number, and an unmeasured demo is not a claim.
+            It is here as evidence that the core works on two unrelated kinds
+            of system. It is <strong>not</strong> a second result. There is no
+            labelled fault corpus for this domain, so there is no accuracy
+            number, and an unmeasured demo is not a claim.
           </p>
         </div>
         <div class="graph-wrap">
@@ -329,9 +333,9 @@
           <p class="eyebrow">No GPU required</p>
           <h2>Reproduce every number on this page</h2>
           <p class="sub">
-            The traces are committed. Scoring replays them from Parquet, so a
-            clean clone re-derives the table above with no server, no cluster,
-            and no hardware.
+            The traces are committed. Scoring replays them from disk, so a
+            fresh clone re-derives the table above. No server, no cluster, no
+            GPU.
           </p>
         </div>
         <div class="command-grid">
@@ -347,8 +351,8 @@ python -m eval.replay traces/vllm/<span data-bind="hero.runId">—</span>
 python -m rca_engine.scripts.gen_portfolio_data</code></pre>
         </div>
         <p class="fine">
-          CI asserts the accuracy floor and the false-positive ceiling on every
-          push, so a change that quietly degrades diagnosis fails the build.
+          CI checks the accuracy floor and the false-positive ceiling on every
+          push. A change that quietly makes the diagnosis worse fails the build.
         </p>
       </section>
     </main>

@@ -407,9 +407,9 @@
     <h1>Localizing p99 TTFT inside a vLLM server</h1>
     <p class="deck">
       Every LLM-serving team alerts on time-to-first-token. Almost nobody can
-      say what made it spike. I pointed a change-point pipeline at the inside
-      of the server, built a labelled fault corpus on a real GPU, and measured
-      how often it got the answer right.
+      say what made it spike. So I pointed a change-point pipeline at the
+      inside of the server. Then I built a labelled fault corpus on a real GPU
+      and measured how often it got the answer right.
     </p>
 
     <div class="strip">
@@ -561,12 +561,12 @@
     <p>
       Marking those nodes as <strong>exogenous</strong> fixes it. They are
       inputs you do not control, not defects. It also buys a second kind of
-      answer. If the first thing to move is exogenous and load is climbing,
-      the verdict is <strong>capacity</strong>: you are being asked for more
-      than you can serve, and nothing is broken. If load is flat and something
-      internal moves first, it is a <strong>pathology</strong>. That is the
-      difference between adding a replica and fixing your config, and a
-      threshold alert cannot make it.
+      answer. Say the first thing to move is exogenous, and load is climbing.
+      The verdict is <strong>capacity</strong>: you are being asked for more
+      than you can serve, and nothing is broken. Now say load is flat and
+      something internal moves first. That is a <strong>pathology</strong>.
+      One means add a replica. The other means fix your config. A threshold
+      alert cannot tell them apart.
     </p>
 
     <!-- 3 -->
@@ -670,11 +670,11 @@
       Against threshold that is 32 more points of top-3 and 0.14 more MRR.
     </p>
     <p>
-      Compare instead against whichever baseline is strongest on each metric
-      and the win gets much smaller: 7.9 points of top-3 over the language
-      model, and 0.06 MRR over correlation. That is the number I would defend.
-      The pipeline leads on ranked quality, and it leads consistently, but the
-      margin is modest and I am not going to dress it up.
+      Compare against whichever baseline is strongest on each metric and the
+      win gets much smaller. It is 7.9 points of top-3 over the language model,
+      and 0.06 MRR over correlation. That is the number I would defend. The
+      pipeline leads on ranked quality, and it leads consistently. But the
+      margin is modest, and I am not going to dress it up.
     </p>
     <p>
       Correlation does exactly what I predicted it would. It ties on top-1 and
@@ -688,10 +688,12 @@
     <p>
       Claude Opus 5 gets 34% top-1 and 0.496 MRR from the same per-component
       evidence. That is competitive, and better than I expected. It is also the
-      fairest answer I have to &#8220;why not just ask a model?&#8221; The gap
-      is that the model never sees onset timing, and onset timing is the whole
-      basis of the pipeline's ranking. Which suggests the interesting system is
-      neither one alone, but a model reading the pipeline's timing output.
+      fairest answer I have to &#8220;why not just ask a model?&#8221;
+    </p>
+    <p>
+      The gap is simple. The model never sees onset timing, and onset timing is
+      what the pipeline ranks by. Which suggests the interesting system is
+      neither one alone. It is a model reading the pipeline's timing output.
     </p>
 
     <!-- 5 -->
@@ -800,18 +802,18 @@
     </p>
     <p>
       That breaks the detector. Layer 1 works out a mean and a standard
-      deviation from the baseline window, and a huge standard deviation means
+      deviation from the baseline window. A huge standard deviation means
       nothing in the fault window ever looks unusual enough to flag. The
-      validity check I had written passes these runs, because it only looks at
-      whether the load generator was keeping up. It was. The server was just
-      still busy with the last incident.
+      validity check I had written passes these runs anyway, because it only
+      asks whether the load generator was keeping up. It was. The server was
+      just still busy with the last incident.
     </p>
     <p>
       Top-1 on those nine runs is <strong>11%</strong>. On the twenty-nine that
       started quiet it is <strong>48%</strong>. The headline 39% counts all
-      thirty-eight anyway. Dropping a quarter of your corpus raises your score,
-      and that is a move you make in the open or not at all, so it is reported
-      here and left out of the totals.
+      thirty-eight anyway. Dropping a quarter of your corpus raises your score.
+      That is a move you make in the open or not at all, so it is reported here
+      and left out of the totals.
     </p>
 
     <h3>The SLI is coarsely bucketed</h3>
