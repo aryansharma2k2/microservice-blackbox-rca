@@ -1,0 +1,18 @@
+{
+  "model": "claude-opus-5",
+  "prompt": "## Signal changes (baseline -> fault)\n\ncomponent / metric                                  baseline       fault     shift\n----------------------------------------------------------------------------------\nbatch_composition/iteration_tokens_p50                   nan      18.237       n/a\ndecode_health/inter_token_latency_p99                    nan       0.726       n/a\npreemption/preemption_rate                             0.000       0.011       n/a\nprefill_cost/prefill_kv_computed_p99                     nan    4458.857       n/a\nprefill_cost/prefill_time_p99                            nan       3.983       n/a\nqueueing/queue_time_p99                                  nan      72.254       n/a\nrequest_shape/prompt_tokens_p50                          nan    3091.110       n/a\nrequest_shape/prompt_tokens_p99                          nan    4508.939       n/a\nrequest_shape/requested_max_tokens_p99                   nan      99.467       n/a\nttft/ttft_p99                                            nan         nan       n/a\nkv_cache_pressure/kv_cache_usage                       0.102       0.802     +690%\nqueueing/requests_waiting                             45.760     267.547     +485%\nprefix_cache_efficacy/cached_token_ratio               0.878       0.099      -89%\nprefix_cache_efficacy/prefix_cache_hit_rate            0.858       0.103      -88%\ndecode_health/generation_token_rate                  517.910      85.841      -83%\narrival_load/request_rate                              7.269       1.264      -83%\nbatch_composition/requests_running                    56.752      15.464      -73%\narrival_load/prompt_token_rate                      2977.281    2820.116       -5%\n\n## Causal graph (A -> B means A can cause B)\n\n  arrival_load -> kv_cache_pressure, queueing, batch_composition, gpu_saturation\n  batch_composition -> prefill_cost, decode_health, gpu_saturation\n  decode_health -> (leaf)\n  gpu_saturation -> prefill_cost, decode_health\n  host_saturation -> queueing, ttft\n  kv_cache_pressure -> preemption, queueing\n  preemption -> queueing, prefill_cost, decode_health\n  prefill_cost -> ttft\n  prefix_cache_efficacy -> prefill_cost, kv_cache_pressure\n  queueing -> ttft\n  request_shape -> prefill_cost, kv_cache_pressure\n  ttft -> (leaf)\n\n## Eligible root causes (rank only these)\n  batch_composition, gpu_saturation, host_saturation, kv_cache_pressure, preemption, prefill_cost, prefix_cache_efficacy, queueing\n\n## Excluded (evidence only, never the answer)\n  arrival_load, decode_health, request_shape, ttft",
+  "diagnosis": {
+    "ranked_components": [
+      "prefix_cache_efficacy",
+      "kv_cache_pressure",
+      "prefill_cost",
+      "queueing",
+      "preemption",
+      "batch_composition",
+      "gpu_saturation",
+      "host_saturation"
+    ],
+    "verdict": "pathology",
+    "reasoning": "Request rate actually fell 83% while prompt token rate held flat, so this is not a capacity event; the primary break is the prefix cache, whose hit rate and cached-token ratio collapsed ~88%, forcing full recomputation of ~4.5k-token prompts. That explains the 690% jump in KV cache usage, the elevated prefill cost, the queue backlog and mild preemption, and hence the TTFT regression, with reduced running requests and generation rate as downstream effects."
+  }
+}
