@@ -33,6 +33,13 @@ jobs:
       - name: Experiment matrix is generated, not hand-edited
         run: python -m rca_engine.scripts.gen_vllm_matrix --check
 
+      # The published dashboard reports accuracy. If the traces or the pipeline
+      # change and this file is not regenerated, the site quietly starts
+      # disagreeing with the code it describes — which is how the previous
+      # version came to present a missed diagnosis as a success.
+      - name: Dashboard data is regenerated from the traces
+        run: python -m rca_engine.scripts.gen_portfolio_data --check
+
       # Re-derive accuracy from the committed traces. No server, no GPU.
       # An RCA project whose CI asserts its own diagnostic accuracy.
       # Floors are REGRESSION GUARDS derived from the measured corpus, not

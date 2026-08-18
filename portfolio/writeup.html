@@ -1,0 +1,885 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="How often a change-point pipeline correctly attributes p99 TTFT spikes inside a vLLM inference server, measured on 38 labelled GPU runs against threshold alerting, correlation ranking, and Claude Opus 5.">
+    <title>Localizing p99 TTFT inside a vLLM server</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%232038CC%22/><path d=%22M6 22 L13 22 L13 12 L19 12 L19 20 L26 20%22 fill=%22none%22 stroke=%22white%22 stroke-width=%223%22 stroke-linejoin=%22round%22 stroke-linecap=%22round%22/></svg>">
+  </head>
+  <body>
+<style>
+  /* --- tokens: complete light palette on bare :root --- */
+  :root {
+    --ground:      #FCFCFD;
+    --ground-2:    #F4F5F8;
+    --ground-3:    #EDEFF4;
+    --ink:         #10141C;
+    --ink-2:       #3D4657;
+    --slate:       #6A7285;
+    --rule:        #E1E4EB;
+    --rule-soft:   #EDEFF3;
+    --accent:      #2038CC;
+    --accent-soft: #E7EAFB;
+    --warn:        #B0450F;
+    --warn-soft:   #FAEDE5;
+    --good:        #0D6E51;
+    --good-soft:   #E4F1EC;
+
+    --serif: ui-serif, "New York", "Iowan Old Style", Charter, "Palatino Linotype", Georgia, serif;
+    --sans:  ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono:  ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+    --col: 34rem;
+    --rail: 7rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0E1116;
+      --ground-2:    #151A22;
+      --ground-3:    #1B212B;
+      --ink:         #E9ECF2;
+      --ink-2:       #B6BECD;
+      --slate:       #8A93A5;
+      --rule:        #262D39;
+      --rule-soft:   #1C222C;
+      --accent:      #8DA0FF;
+      --accent-soft: #1A2140;
+      --warn:        #E8895A;
+      --warn-soft:   #2C1D15;
+      --good:        #56C4A0;
+      --good-soft:   #12271F;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0E1116;
+    --ground-2:    #151A22;
+    --ground-3:    #1B212B;
+    --ink:         #E9ECF2;
+    --ink-2:       #B6BECD;
+    --slate:       #8A93A5;
+    --rule:        #262D39;
+    --rule-soft:   #1C222C;
+    --accent:      #8DA0FF;
+    --accent-soft: #1A2140;
+    --warn:        #E8895A;
+    --warn-soft:   #2C1D15;
+    --good:        #56C4A0;
+    --good-soft:   #12271F;
+  }
+
+  /* --- base --- */
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 1.0625rem;
+    line-height: 1.68;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .page {
+    max-width: 66rem;
+    margin: 0 auto;
+    padding: clamp(2.5rem, 6vw, 5rem) clamp(1.1rem, 4vw, 3rem) 6rem;
+  }
+
+  /* The reading grid: a narrow rail for section marks, then the column.
+     Figures opt out with .wide and span both tracks. */
+  .flow {
+    display: grid;
+    grid-template-columns: var(--rail) minmax(0, var(--col));
+    column-gap: 2.25rem;
+    row-gap: 1.35rem;
+    justify-content: center;
+  }
+  .flow > * { grid-column: 2; margin: 0; }
+  .flow > .wide { grid-column: 1 / -1; }
+
+  p { margin: 0; }
+  p + p { margin-top: -.15rem; }
+
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  a:hover { text-decoration-thickness: 2px; }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  strong { font-weight: 650; }
+  em { font-style: italic; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .84em;
+    background: var(--ground-3);
+    padding: .1em .34em;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+
+  /* --- masthead --- */
+  .masthead { margin-bottom: clamp(2.5rem, 5vw, 3.75rem); }
+
+  .kicker {
+    font-family: var(--sans);
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 1.1rem;
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: clamp(2.1rem, 5.4vw, 3.35rem);
+    line-height: 1.08;
+    letter-spacing: -.021em;
+    font-weight: 600;
+    text-wrap: balance;
+    margin: 0 0 1.1rem;
+    max-width: 20ch;
+  }
+
+  .deck {
+    font-size: clamp(1.1rem, 2.1vw, 1.28rem);
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 46ch;
+    text-wrap: pretty;
+  }
+
+  /* --- the number strip: result before argument --- */
+  .strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    overflow: hidden;
+    margin-top: 2.5rem;
+  }
+  .strip div { background: var(--ground); padding: 1rem 1.1rem 1.1rem; }
+  .strip b {
+    display: block;
+    font-family: var(--mono);
+    font-size: 1.6rem;
+    font-weight: 500;
+    letter-spacing: -.03em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    line-height: 1.15;
+  }
+  .strip span {
+    display: block;
+    font-family: var(--sans);
+    font-size: .72rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--slate);
+    margin-top: .4rem;
+  }
+
+  /* --- sections --- */
+  .sec {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: var(--rail) minmax(0, var(--col));
+    column-gap: 2.25rem;
+    align-items: baseline;
+    margin-top: 3.25rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+  }
+  .sec .mark {
+    grid-column: 1;
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--slate);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    padding-top: .38rem;
+  }
+  .sec h2 {
+    grid-column: 2;
+    font-family: var(--serif);
+    font-size: clamp(1.35rem, 2.8vw, 1.72rem);
+    line-height: 1.2;
+    letter-spacing: -.014em;
+    font-weight: 600;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: .8rem;
+    font-weight: 650;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    margin: 1.1rem 0 -.5rem;
+  }
+
+  /* --- figures --- */
+  figure.wide {
+    margin: 1.5rem 0 .75rem;
+    display: grid;
+    gap: .85rem;
+  }
+  figcaption {
+    font-family: var(--sans);
+    font-size: .82rem;
+    line-height: 1.55;
+    color: var(--slate);
+    max-width: 62ch;
+  }
+  figcaption b { color: var(--ink-2); font-weight: 620; }
+
+  .frame {
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--ground-2);
+    padding: 1.1rem;
+    overflow-x: auto;
+  }
+
+  /* --- mechanism graph --- */
+  .graph svg { display: block; width: 100%; min-width: 44rem; height: auto; }
+  .graph .e      { fill: none; stroke: var(--rule); stroke-width: 1; }
+  .graph .e-exo  { fill: none; stroke: var(--accent); stroke-width: 1; opacity: .3; }
+  .graph .n rect { fill: var(--ground); stroke: var(--rule); stroke-width: 1; }
+  .graph .n text {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    fill: var(--ink-2);
+  }
+  .graph .n-bar     { stroke: none; }
+  .graph .n-mech .n-bar { fill: var(--slate); }
+  .graph .n-exo  .n-bar { fill: var(--accent); }
+  .graph .n-sli  .n-bar { fill: var(--warn); }
+  .graph .n-sli rect:first-child { stroke: var(--warn); }
+  .graph .n-exo rect:first-child { stroke: var(--accent); stroke-opacity: .5; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+    font-family: var(--sans);
+    font-size: .78rem;
+    color: var(--slate);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: .4rem; }
+  .legend i { width: 3px; height: 13px; border-radius: 1px; display: inline-block; }
+
+  /* --- tables --- */
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--mono);
+    font-size: .82rem;
+    font-variant-numeric: tabular-nums;
+  }
+  thead th {
+    font-family: var(--sans);
+    font-size: .68rem;
+    font-weight: 620;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--slate);
+    text-align: right;
+    padding: 0 .65rem .6rem;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  thead th:first-child { text-align: left; }
+  tbody td {
+    padding: .5rem .65rem;
+    text-align: right;
+    border-bottom: 1px solid var(--rule-soft);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  tbody td:first-child { text-align: left; color: var(--ink); }
+  tbody tr.lead td { background: var(--accent-soft); }
+  tbody tr.lead td:first-child { font-weight: 600; color: var(--ink); }
+  td .best { color: var(--good); font-weight: 620; }
+  td .poor { color: var(--warn); }
+  td .note {
+    font-family: var(--sans);
+    font-size: .74rem;
+    color: var(--slate);
+    display: block;
+    margin-top: .1rem;
+  }
+
+  /* confusion matrix */
+  table.matrix td { text-align: center; padding: .45rem .4rem; }
+  table.matrix td:first-child { text-align: left; }
+  table.matrix thead th { text-align: center; font-size: .62rem; }
+  table.matrix thead th:first-child { text-align: left; }
+  table.matrix .zero { color: var(--rule); }
+  table.matrix .hit  { background: var(--good-soft); color: var(--good); font-weight: 650; }
+  table.matrix .off  { color: var(--warn); }
+
+  /* --- pull note --- */
+  .note-block {
+    border-left: 2px solid var(--accent);
+    background: var(--ground-2);
+    padding: 1rem 1.25rem;
+    border-radius: 0 5px 5px 0;
+    display: grid;
+    gap: .7rem;
+  }
+  .note-block.caution { border-left-color: var(--warn); background: var(--warn-soft); }
+  .note-block p { font-size: 1rem; line-height: 1.6; }
+  .note-block .label {
+    font-family: var(--sans);
+    font-size: .7rem;
+    font-weight: 650;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .note-block.caution .label { color: var(--warn); }
+
+  pre {
+    font-family: var(--mono);
+    font-size: .8rem;
+    line-height: 1.7;
+    background: var(--ground-2);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: .9rem 1.1rem;
+    overflow-x: auto;
+    margin: 0;
+    color: var(--ink-2);
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  ul { margin: 0; padding-left: 1.15rem; display: grid; gap: .55rem; }
+  li { padding-left: .15rem; }
+  li::marker { color: var(--slate); }
+
+  /* --- colophon --- */
+  .colophon {
+    grid-column: 1 / -1;
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--sans);
+    font-size: .82rem;
+    color: var(--slate);
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1.5rem;
+    justify-content: space-between;
+  }
+
+  @media (max-width: 46rem) {
+    .flow, .sec { grid-template-columns: minmax(0, 1fr); }
+    .flow > *, .sec h2 { grid-column: 1; }
+    .sec .mark { grid-column: 1; text-align: left; padding: 0 0 .3rem; }
+    .graph .frame { padding: .6rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <p class="kicker">Inference-serving reliability &#183; measured</p>
+    <h1>Localizing p99 TTFT inside a vLLM server</h1>
+    <p class="deck">
+      Time-to-first-token is the SLI every LLM-serving team alerts on and
+      nobody can attribute. This is what happened when I pointed a change-point
+      pipeline at the inside of the server, built a labelled fault corpus on a
+      real GPU, and measured how often it was right.
+    </p>
+
+    <div class="strip">
+      <div><b>74%</b><span>top-3 accuracy</span></div>
+      <div><b>39%</b><span>top-1 accuracy</span></div>
+      <div><b>0%</b><span>false positives</span></div>
+      <div><b>38</b><span>labelled runs</span></div>
+    </div>
+  </header>
+
+  <div class="flow">
+
+    <!-- --- 1 -->
+    <section class="sec">
+      <p class="mark">&#167; 1</p>
+      <h2>The suspects all look the same</h2>
+    </section>
+
+    <p>
+      When p99 TTFT spikes, the on-call engineer opens a Grafana board and
+      guesses. The candidates are KV cache pressure, batch scheduling stalls,
+      prefix-cache collapse, and preemption &#8212; and the reason the guess is hard
+      is not that the telemetry is missing. It is all there, at one-second
+      resolution. The problem is that these mechanisms are
+      <em>observationally confusable</em>: they share symptoms, and they cause
+      one another.
+    </p>
+    <p>
+      Preemption is simultaneously a cause of latency and an effect of cache
+      pressure. So ranking metrics by correlation with the SLI implicates both
+      and separates neither &#8212; the correlation is real in both directions. A
+      static threshold on <code>kv_cache_usage_perc</code> fires during a plain
+      load ramp, during a prefix-cache collapse, and during a genuine
+      misconfiguration, with no way to tell you which one you are in.
+    </p>
+    <p>
+      That is the gap this project aims at: not detecting that something is
+      wrong, which is easy, but attributing it, which is not.
+    </p>
+
+    <!-- --- 2 -->
+    <section class="sec">
+      <p class="mark">&#167; 2</p>
+      <h2>An inference server is one service, so localize inside it</h2>
+    </section>
+
+    <p>
+      I started from an FChain-style pipeline built for microservice RCA:
+      eight layers that find change points in per-service metrics, estimate
+      when each deviation actually began, and rank services by onset order
+      filtered through a call graph.
+    </p>
+    <p>
+      Pointing that at vLLM naively does not work. An inference server is a
+      single process, so there is nothing to localize <em>across</em>, and the
+      dependency layers have no graph to operate on. The retarget only becomes
+      interesting with a reframe: the localization domain changes from
+      <strong>services</strong> to <strong>mechanisms</strong>. The vLLM
+      scheduler has genuine internal causal structure &#8212; cache occupancy drives
+      preemption, preemption drives queueing, queueing drives TTFT &#8212; and that
+      structure is a DAG. Onset ordering and graph filtering apply to it
+      unchanged.
+    </p>
+
+    <figure class="wide graph">
+      <div class="frame">
+<svg viewBox="0 0 1074 202" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="vLLM mechanism graph: twelve subsystem nodes with causal edges converging on TTFT">
+<g class="g-edges">
+<path class="e-exo" d="M 164 29.0 C 201.0 29.0, 201.0 77.0, 238 77.0"/>
+<path class="e-exo" d="M 164 29.0 C 425.0 29.0, 425.0 53.0, 686 53.0"/>
+<path class="e-exo" d="M 164 29.0 C 201.0 29.0, 201.0 125.0, 238 125.0"/>
+<path class="e-exo" d="M 164 29.0 C 313.0 29.0, 313.0 125.0, 462 125.0"/>
+<path class="e-exo" d="M 164 77.0 C 425.0 77.0, 425.0 101.0, 686 101.0"/>
+<path class="e-exo" d="M 164 77.0 C 201.0 77.0, 201.0 77.0, 238 77.0"/>
+<path class="e" d="M 164 125.0 C 425.0 125.0, 425.0 101.0, 686 101.0"/>
+<path class="e" d="M 164 125.0 C 201.0 125.0, 201.0 77.0, 238 77.0"/>
+<path class="e" d="M 388 77.0 C 425.0 77.0, 425.0 77.0, 462 77.0"/>
+<path class="e" d="M 388 77.0 C 537.0 77.0, 537.0 53.0, 686 53.0"/>
+<path class="e" d="M 612 77.0 C 649.0 77.0, 649.0 53.0, 686 53.0"/>
+<path class="e" d="M 612 77.0 C 649.0 77.0, 649.0 101.0, 686 101.0"/>
+<path class="e" d="M 612 77.0 C 649.0 77.0, 649.0 149.0, 686 149.0"/>
+<path class="e" d="M 388 125.0 C 537.0 125.0, 537.0 101.0, 686 101.0"/>
+<path class="e" d="M 388 125.0 C 537.0 125.0, 537.0 149.0, 686 149.0"/>
+<path class="e" d="M 388 125.0 C 425.0 125.0, 425.0 125.0, 462 125.0"/>
+<path class="e" d="M 612 125.0 C 649.0 125.0, 649.0 101.0, 686 101.0"/>
+<path class="e" d="M 612 125.0 C 649.0 125.0, 649.0 149.0, 686 149.0"/>
+<path class="e" d="M 164 173.0 C 425.0 173.0, 425.0 53.0, 686 53.0"/>
+<path class="e" d="M 164 173.0 C 537.0 173.0, 537.0 101.0, 910 101.0"/>
+<path class="e" d="M 836 53.0 C 873.0 53.0, 873.0 101.0, 910 101.0"/>
+<path class="e" d="M 836 101.0 C 873.0 101.0, 873.0 101.0, 910 101.0"/>
+</g><g class="g-nodes">
+<g class="n n-exo"><rect x="14" y="14.0" width="150" height="30" rx="4"/><rect class="n-bar" x="14" y="14.0" width="2.5" height="30"/><text x="24" y="32.5">arrival_load</text></g>
+<g class="n n-exo"><rect x="14" y="62.0" width="150" height="30" rx="4"/><rect class="n-bar" x="14" y="62.0" width="2.5" height="30"/><text x="24" y="80.5">request_shape</text></g>
+<g class="n n-mech"><rect x="14" y="110.0" width="150" height="30" rx="4"/><rect class="n-bar" x="14" y="110.0" width="2.5" height="30"/><text x="24" y="128.5">prefix_cache_efficacy</text></g>
+<g class="n n-mech"><rect x="238" y="62.0" width="150" height="30" rx="4"/><rect class="n-bar" x="238" y="62.0" width="2.5" height="30"/><text x="248" y="80.5">kv_cache_pressure</text></g>
+<g class="n n-mech"><rect x="462" y="62.0" width="150" height="30" rx="4"/><rect class="n-bar" x="462" y="62.0" width="2.5" height="30"/><text x="472" y="80.5">preemption</text></g>
+<g class="n n-mech"><rect x="238" y="110.0" width="150" height="30" rx="4"/><rect class="n-bar" x="238" y="110.0" width="2.5" height="30"/><text x="248" y="128.5">batch_composition</text></g>
+<g class="n n-mech"><rect x="462" y="110.0" width="150" height="30" rx="4"/><rect class="n-bar" x="462" y="110.0" width="2.5" height="30"/><text x="472" y="128.5">gpu_saturation</text></g>
+<g class="n n-mech"><rect x="14" y="158.0" width="150" height="30" rx="4"/><rect class="n-bar" x="14" y="158.0" width="2.5" height="30"/><text x="24" y="176.5">host_saturation</text></g>
+<g class="n n-mech"><rect x="686" y="38.0" width="150" height="30" rx="4"/><rect class="n-bar" x="686" y="38.0" width="2.5" height="30"/><text x="696" y="56.5">queueing</text></g>
+<g class="n n-mech"><rect x="686" y="86.0" width="150" height="30" rx="4"/><rect class="n-bar" x="686" y="86.0" width="2.5" height="30"/><text x="696" y="104.5">prefill_cost</text></g>
+<g class="n n-mech"><rect x="686" y="134.0" width="150" height="30" rx="4"/><rect class="n-bar" x="686" y="134.0" width="2.5" height="30"/><text x="696" y="152.5">decode_health</text></g>
+<g class="n n-sli"><rect x="910" y="86.0" width="150" height="30" rx="4"/><rect class="n-bar" x="910" y="86.0" width="2.5" height="30"/><text x="920" y="104.5">ttft</text></g>
+</g></svg>
+      </div>
+      <div class="legend">
+        <span><i style="background: var(--accent)"></i>exogenous input</span>
+        <span><i style="background: var(--slate)"></i>mechanism</span>
+        <span><i style="background: var(--warn)"></i>the SLI being explained</span>
+      </div>
+      <figcaption>
+        <b>Twelve mechanism nodes, laid out by longest path.</b> Each is backed
+        by one or more Prometheus series; edges encode &#8220;A can cause B.&#8221; The
+        statistical core needed no modification to retarget &#8212; only this graph
+        and the metric registry are domain-specific. The picture is rendered
+        from the same object the ranking layers consume, so it cannot drift
+        from the code.
+      </figcaption>
+    </figure>
+
+    <p>
+      Two things fall out of the domain that a generic pipeline could not have
+      known.
+    </p>
+
+    <h3>TTFT decomposes natively</h3>
+    <p>
+      vLLM exposes <code>request_queue_time_seconds</code> and
+      <code>request_prefill_time_seconds</code> as separate histograms. TTFT is
+      approximately their sum, so the split partitions the hypothesis space
+      before any inference runs: queue-dominated points at admission-side
+      causes, prefill-dominated at compute-side. That is free information the
+      metric endpoint hands you, and most dashboards throw it away by plotting
+      only the total.
+    </p>
+
+    <h3>Load causes everything, so load cannot be the answer</h3>
+    <p>
+      Rank by earliest onset and <code>arrival_load</code> wins every incident,
+      because in a real system traffic moves first. Marking nodes as
+      <strong>exogenous</strong> &#8212; uncontrolled inputs rather than faults &#8212;
+      fixes this, and produces a second kind of answer worth having. If the
+      earliest onset is exogenous and load is climbing, the verdict is
+      <strong>capacity</strong>: you are simply overloaded and nothing is
+      broken. If load is flat and an internal node fires first, it is a
+      <strong>pathology</strong>. That is the difference between &#8220;add a
+      replica&#8221; and &#8220;fix your config,&#8221; and it is the distinction an alert
+      threshold structurally cannot make.
+    </p>
+
+    <!-- --- 3 -->
+    <section class="sec">
+      <p class="mark">&#167; 3</p>
+      <h2>What I actually measured</h2>
+    </section>
+
+    <p>
+      The claim I wanted to be able to defend was not &#8220;this works&#8221; but &#8220;this
+      works <em>this often</em>, against these alternatives.&#8221; That requires a
+      labelled corpus, which is the part most RCA projects skip.
+    </p>
+    <p>
+      One L4 GPU, one session: 38 scorable runs across seven fault scenarios
+      covering five distinct mechanisms, plus eight clean runs so the
+      false-positive rate is measurable rather than assumed. Most faults are
+      <strong>workload shaping</strong> rather than infrastructure chaos &#8212; a
+      prefix-diversity attack that gives every request a unique prefix, a
+      long-output burst that makes sequences hold their blocks for minutes, a
+      bimodal short/long mix. These are cheaper and far more reproducible than
+      killing containers. Config-side faults restart the server degraded, and
+      each restart is a labelled fault.
+    </p>
+    <p>
+      Every run writes <code>metrics.parquet</code> and
+      <code>ground_truth.json</code>, both committed. Scoring replays from
+      disk, so every number here is re-derivable with no GPU, no cluster, and
+      no server.
+    </p>
+
+    <!-- --- 4 -->
+    <section class="sec">
+      <p class="mark">&#167; 4</p>
+      <h2>The result, including the part that stings</h2>
+    </section>
+
+    <p>
+      A top-1 number in isolation says nothing about whether eight layers of
+      statistics earn their complexity. So the pipeline is scored against three
+      classical baselines and against a frontier model given the same evidence.
+    </p>
+
+    <figure class="wide">
+      <div class="frame">
+        <table>
+          <thead>
+            <tr>
+              <th>method</th><th>top-1</th><th>top-3</th><th>MRR</th><th>FPR</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="lead">
+              <td>pipeline<span class="note">eight-layer change-point localization</span></td>
+              <td>39%</td><td><span class="best">74%</span></td>
+              <td><span class="best">0.564</span></td><td><span class="best">0%</span></td>
+            </tr>
+            <tr>
+              <td>threshold<span class="note">static runbook rules, in order</span></td>
+              <td><span class="best">42%</span></td><td>42%</td><td>0.428</td><td>0%</td>
+            </tr>
+            <tr>
+              <td>correlation<span class="note">rank by |r| against the SLI</span></td>
+              <td>39%</td><td>61%</td><td>0.502</td><td>0%</td>
+            </tr>
+            <tr>
+              <td>Claude Opus 5<span class="note">same per-component evidence, no pipeline</span></td>
+              <td>34%</td><td>66%</td><td>0.496</td><td>0%</td>
+            </tr>
+            <tr>
+              <td>topology<span class="note">always blame the graph root</span></td>
+              <td>13%</td><td>58%</td><td>0.362</td><td><span class="poor">100%</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <figcaption>
+        38 runs, five confusable mechanisms, eight clean. <b>FPR</b> is the
+        share of clean runs on which a method named something. Random guessing
+        among five mechanisms would score 20% top-1 and 60% top-3.
+      </figcaption>
+    </figure>
+
+    <div class="note-block caution">
+      <p class="label">The uncomfortable row</p>
+      <p>
+        <strong>Static threshold alerting wins top-1.</strong> Three points
+        ahead of the thing I built. If I only reported top-1, the honest
+        conclusion would be that the pipeline is not worth running.
+      </p>
+    </div>
+
+    <p>
+      It is worth running for a different reason, and the rest of the row says
+      why: threshold alerting is <em>useless past rank 1</em>. Its top-3 never
+      improves on its top-1, because once the first runbook rule fires there is
+      nothing meaningful behind it. Against it the pipeline is +32 points of
+      top-3 and +0.14 MRR. What the pipeline produces is a ranked shortlist an
+      engineer can work down; what a threshold produces is one guess and a
+      shrug.
+    </p>
+    <p>
+      The fairer comparison is against whichever baseline is strongest on each
+      metric, and it is a narrower win: +7.9 points of top-3 over the language
+      model and +0.06 MRR over correlation. That is the number I would defend.
+      The pipeline leads on ranked quality, it leads consistently, and the lead
+      is real but not large.
+    </p>
+    <p>
+      Correlation behaves exactly as predicted: it ties on top-1 and loses 13
+      points of top-3, because it cannot separate a cause from its own effect.
+      Topology &#8212; always blame the graph root, ignoring telemetry entirely &#8212;
+      scores a non-trivial 58% top-3, which is a useful reminder of how much a
+      shortlist gets for free from knowing the architecture, and it names
+      something on <em>every</em> clean run.
+    </p>
+    <p>
+      Claude Opus 5, handed the same per-component before/after evidence,
+      reaches 34% top-1 and 0.496 MRR &#8212; genuinely competitive, and better than
+      I expected. It is also the fairest available answer to &#8220;why not just ask
+      a model?&#8221; The gap is that the model never sees onset timing, and onset
+      ordering is the pipeline's entire mechanism. That suggests the
+      interesting system is not one or the other but the model reading the
+      pipeline's timing output, which is roughly what the explainer stage does.
+    </p>
+
+    <!-- --- 5 -->
+    <section class="sec">
+      <p class="mark">&#167; 5</p>
+      <h2>The dominant failure is not statistical</h2>
+    </section>
+
+    <p>
+      The confusion matrix is where the actual finding lives.
+    </p>
+
+    <figure class="wide">
+      <div class="frame">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>injected &#8595; / named &#8594;</th>
+              <th>batch_comp</th><th>kv_cache</th><th>nothing</th>
+              <th>preempt</th><th>prefix_cache</th><th>queueing</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>batch_composition</td>
+              <td class="zero">&#183;</td><td class="off">4</td><td class="zero">&#183;</td>
+              <td class="zero">&#183;</td><td class="off">1</td><td class="zero">&#183;</td></tr>
+            <tr><td>kv_cache_pressure</td>
+              <td class="off">5</td><td class="hit">6</td><td class="zero">&#183;</td>
+              <td class="zero">&#183;</td><td class="zero">&#183;</td><td class="off">1</td></tr>
+            <tr><td>nothing</td>
+              <td class="zero">&#183;</td><td class="zero">&#183;</td><td class="hit">8</td>
+              <td class="zero">&#183;</td><td class="zero">&#183;</td><td class="zero">&#183;</td></tr>
+            <tr><td>prefill_cost</td>
+              <td class="zero">&#183;</td><td class="off">4</td><td class="zero">&#183;</td>
+              <td class="zero">&#183;</td><td class="off">1</td><td class="zero">&#183;</td></tr>
+            <tr><td>prefix_cache_efficacy</td>
+              <td class="zero">&#183;</td><td class="off">3</td><td class="zero">&#183;</td>
+              <td class="off">1</td><td class="hit">1</td><td class="zero">&#183;</td></tr>
+            <tr><td>queueing</td>
+              <td class="off">3</td><td class="zero">&#183;</td><td class="zero">&#183;</td>
+              <td class="zero">&#183;</td><td class="zero">&#183;</td><td class="zero">&#183;</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <figcaption>
+        A perfect diagnoser is diagonal. Note where the off-diagonal mass
+        collects: almost all of it lands in two columns &#8212;
+        <b>kv_cache_pressure</b> and <b>batch_composition</b>. That is not
+        random error, and the reason turns out to have nothing to do with the
+        statistics.
+      </figcaption>
+    </figure>
+
+    <div class="note-block">
+      <p class="label">The finding</p>
+      <p>
+        The pipeline ranks by onset order, and onset is measured from the
+        telemetry &#8212; not from the event. <strong>How a metric is measured
+        determines when it appears to move.</strong> A gauge-backed effect
+        systematically outranks its own rate-backed cause.
+      </p>
+    </div>
+
+    <p>
+      Gauges &#8212; <code>kv_cache_usage_perc</code>,
+      <code>num_requests_running</code> &#8212; report their new value on the very
+      next scrape. Windowed rates and histogram quantiles &#8212;
+      <code>rate(...[30s])</code>, <code>histogram_quantile</code> over buckets
+      &#8212; only reach their new value once the window fills, roughly half a window
+      late. Two mechanisms in this domain are read from instantaneous gauges,
+      and those are precisely the two columns absorbing the off-diagonal mass.
+    </p>
+    <p>
+      The pipeline compensates by shifting each series back by half its window
+      before ranking. A/B'd on this corpus that is worth +2.7 points of top-1,
+      so it stays on &#8212; but it is a correction, not a cure. Fixing this properly
+      means changing what is measured, not how it is ranked: exporting
+      per-mechanism event timestamps rather than inferring onset from
+      aggregates.
+    </p>
+    <p>
+      I find this the most useful thing the project produced, because it
+      generalizes past vLLM. Any onset-ordering method run over a Prometheus
+      scrape is subject to it, and I have not seen it stated. It also means a
+      published top-1 number for this class of method is partly a measurement
+      of the exporter's design.
+    </p>
+
+    <!-- --- 6 -->
+    <section class="sec">
+      <p class="mark">&#167; 6</p>
+      <h2>Two things wrong with my own corpus</h2>
+    </section>
+
+    <p>
+      Both of these I found while building the results page, which is an
+      argument for building the results page.
+    </p>
+
+    <h3>Nine runs never had a clean baseline</h3>
+    <p>
+      The capture protocol runs baseline, inject, fault, repeat. When the
+      previous run's load has not finished draining, the baseline window opens
+      with p99 TTFT already 300&#8211;600&#215; its own median. Layer 1 calibrates its
+      mean and standard deviation from that window, so an inflated sigma
+      desensitizes the detector and nothing in the fault window clears
+      threshold. The validity check I had written passes these runs &#8212; it looks
+      at offered-versus-completed throughput and backlog growth, and by those
+      measures the load generator was healthy. The server was simply still
+      working off the last incident.
+    </p>
+    <p>
+      Top-1 is <strong>11%</strong> on those nine runs and <strong>48%</strong>
+      on the twenty-nine that started quiet. The headline 39% counts all
+      thirty-eight anyway. Dropping a quarter of a corpus raises your score,
+      and that is a move that should be argued in the open rather than applied
+      quietly &#8212; so it is reported and left out of the totals.
+    </p>
+
+    <h3>The SLI is coarsely bucketed</h3>
+    <p>
+      <code>time_to_first_token_seconds</code> is a Prometheus histogram, and
+      p99 is interpolated from its buckets. Across these traces the quantile
+      spends most of its time pinned to two values &#8212; 0.248 s and 159.2 s &#8212;
+      which are bucket edges, not measurements. Genuine small TTFT movements
+      are invisible, and the SLI reads as a step function rather than a curve.
+      Anything finer needs custom bucket boundaries set at deploy time.
+    </p>
+
+    <!-- --- 7 -->
+    <section class="sec">
+      <p class="mark">&#167; 7</p>
+      <h2>What I would do differently</h2>
+    </section>
+
+    <ul>
+      <li>
+        <strong>Instrument onset directly.</strong> The measurement-modality
+        bias is not fixable downstream. A small exporter emitting a timestamp
+        when each mechanism crosses a state boundary would remove the dominant
+        error source entirely, at the cost of no longer being black-box.
+      </li>
+      <li>
+        <strong>Gate the baseline on the SLI, not just on load.</strong> One
+        additional check &#8212; the SLI must be within a few multiples of its own
+        median before the window opens &#8212; would have saved nine runs and roughly
+        a third of the GPU budget.
+      </li>
+      <li>
+        <strong>Set histogram buckets before capturing.</strong> Bucket
+        boundaries are a deploy-time decision, and I discovered they mattered
+        after the GPU was returned.
+      </li>
+      <li>
+        <strong>More repeats per scenario, fewer scenarios.</strong> Three runs
+        of <code>queue_starved</code> cannot distinguish a real weakness from
+        noise. Five mechanisms measured well would say more than seven measured
+        thinly.
+      </li>
+    </ul>
+
+    <!-- --- 8 -->
+    <section class="sec">
+      <p class="mark">&#167; 8</p>
+      <h2>Reproducing it</h2>
+    </section>
+
+    <p>
+      The traces are in the repository. Scoring replays them from Parquet, so a
+      clean clone re-derives every number on this page without a GPU. The
+      pipeline is deterministic &#8212; Layer 1's block bootstrap is seeded per
+      <code>(component, metric)</code>, after I found that repeated evaluations
+      of the same corpus were producing different top-3 numbers.
+    </p>
+
+    <pre><code>git clone https://github.com/aryansharma2k2/microservice-blackbox-rca
+cd microservice-blackbox-rca
+pip install -e ".[dev]"
+
+make eval</code></pre>
+
+    <p>
+      CI asserts diagnostic accuracy on every push &#8212; an accuracy floor and a
+      false-positive ceiling, both derived from measurement rather than
+      aspiration &#8212; so a change that quietly degrades diagnosis fails the build.
+    </p>
+
+    <footer class="colophon">
+      <span>Aryan Sharma &#183; 2026</span>
+      <span>
+        <a href="https://github.com/aryansharma2k2/microservice-blackbox-rca">Source and traces</a>
+        &#183;
+        <a href="./index.html">Interactive dashboard</a>
+      </span>
+    </footer>
+
+  </div>
+</div>
+  </body>
+</html>

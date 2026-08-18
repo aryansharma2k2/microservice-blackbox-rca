@@ -3,128 +3,366 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Interactive portfolio demo for black-box root-cause analysis on microservices.">
-    <title>Microservice Black-Box RCA</title>
+    <meta name="description" content="Root-cause localization inside a vLLM inference server: which subsystem made p99 TTFT spike, measured against threshold alerting, correlation, and a frontier model.">
+    <title>TTFT-RCA — Root-cause localization inside an LLM inference server</title>
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="#overview" aria-label="Microservice Black-Box RCA home">
+      <a class="brand" href="#top">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>Black-Box RCA</span>
+        <span>TTFT&#8209;RCA</span>
       </a>
-      <nav class="nav" aria-label="Dashboard sections">
-        <a href="#experiment">Experiment</a>
-        <a href="#graph">Graph</a>
+      <nav class="nav" aria-label="Sections">
+        <a href="#result">Result</a>
+        <a href="#graph">Mechanisms</a>
+        <a href="#cases">Cases</a>
+        <a href="#failure">Failures</a>
         <a href="#pipeline">Pipeline</a>
-        <a href="#reproduce">Reproduce</a>
-        <a class="github-link" href="https://github.com/aryansharma2k2/microservice-blackbox-rca" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="#boutique">Second domain</a>
+        <a href="./writeup.html">Writeup</a>
+        <a class="ghost" href="https://github.com/aryansharma2k2/microservice-blackbox-rca">GitHub</a>
       </nav>
     </header>
 
-    <main>
-      <section id="overview" class="overview-band">
-        <div class="overview-copy">
-          <p class="eyebrow">Kubernetes fault injection + Prometheus telemetry</p>
-          <h1>Microservice Black-Box RCA</h1>
+    <main id="top">
+      <!-- ————————————————————————————— hero -->
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">vLLM · Prometheus · no code changes, no profiler, no traces</p>
+          <h1>When p99 TTFT spikes, <em>which subsystem did it?</em></h1>
           <p class="lede">
-            A deployed research dashboard for an FChain-style root-cause analysis engine,
-            built from a real Online Boutique chaos experiment.
+            Time-to-first-token is the SLI every LLM-serving team alerts on and
+            nobody can attribute. The suspects — KV&nbsp;cache pressure, batch
+            scheduling, prefix-cache collapse, preemption — share symptoms and
+            cause one another. Preemption is simultaneously a cause of latency
+            and an effect of cache pressure, so correlation implicates both and
+            separates neither.
           </p>
-          <div class="stat-strip" aria-label="Experiment summary">
-            <div>
-              <strong id="stat-fault">-</strong>
-              <span>fault</span>
-            </div>
-            <div>
-              <strong id="stat-latency">-</strong>
-              <span>diagnosis latency</span>
-            </div>
-            <div>
-              <strong id="stat-runtime">-</strong>
-              <span>RCA runtime</span>
-            </div>
+          <p class="lede">
+            This is an eight-layer change-point pipeline pointed at the inside
+            of one process, localizing among <strong>mechanisms</strong> rather
+            than across services. Scored on
+            <span data-bind="runsScored">—</span> labelled runs captured on a
+            real L4 GPU, against three classical baselines and Claude Opus&nbsp;5
+            given identical evidence.
+          </p>
+          <div class="hero-actions">
+            <a class="btn primary" href="#result">See the numbers</a>
+            <a class="btn" href="./writeup.html">Read the writeup</a>
+            <a class="btn" href="#failure">Where it fails</a>
           </div>
         </div>
-        <div class="signal-panel" aria-label="Latency signal overview">
-          <div class="panel-head">
-            <span>frontend p95 SLO</span>
-            <strong id="slo-threshold">-</strong>
-          </div>
-          <svg id="hero-chart" class="hero-chart" viewBox="0 0 620 280" role="img" aria-label="Latency signal crossing the SLO threshold"></svg>
+
+        <figure class="hero-panel">
+          <figcaption class="panel-head">
+            <span>run <span data-bind="hero.runId" class="mono">—</span> · prefix-cache collapse</span>
+            <strong class="tag ok">diagnosed correctly</strong>
+          </figcaption>
+          <div id="hero-chart" class="chart-host"></div>
+          <p class="panel-foot">
+            Every request carries a unique prefix, so the cache stops helping —
+            hit rate falls from 97% to zero and TTFT doubles. Occupancy and
+            batch size move too. The pipeline names the prefix cache at
+            +3&nbsp;s, ahead of cache pressure at +4&nbsp;s and batch
+            composition at +6&nbsp;s, both of which sit downstream of it. Onset
+            <em>ordering</em> is the whole signal.
+          </p>
+        </figure>
+      </section>
+
+      <!-- ————————————————————————————— headline stats -->
+      <section class="stat-band" aria-label="Headline results">
+        <div class="stat">
+          <strong data-bind="headline.top3">—</strong>
+          <span>top-3 accuracy</span>
+          <small>true mechanism in the ranked shortlist</small>
+        </div>
+        <div class="stat">
+          <strong data-bind="headline.top1">—</strong>
+          <span>top-1 accuracy</span>
+          <small>named first, out of 5 confusable mechanisms</small>
+        </div>
+        <div class="stat">
+          <strong data-bind="headline.fpr">—</strong>
+          <span>false positives</span>
+          <small data-bind="fprNote">—</small>
+        </div>
+        <div class="stat">
+          <strong data-bind="headline.mrr">—</strong>
+          <span>mean reciprocal rank</span>
+          <small>how far down the list the answer sits</small>
         </div>
       </section>
 
-      <section id="experiment" class="section">
+      <!-- ————————————————————————————— result -->
+      <section id="result" class="section">
         <div class="section-head">
-          <p class="eyebrow">Run 20260423_155718</p>
-          <h2>Experiment Replay</h2>
+          <p class="eyebrow">Measured, not asserted</p>
+          <h2>Does eight layers of statistics beat the obvious thing?</h2>
+          <p class="sub">
+            A top-1 number alone says nothing about whether the complexity is
+            earned. Every method below sees the same evidence from the same
+            <span data-bind="runsScored">—</span> runs and is scored identically.
+            <strong>Threshold alerting wins top-1.</strong> It is also useless
+            past rank&nbsp;1 — which is the honest shape of this result.
+          </p>
         </div>
-        <div class="experiment-grid">
-          <div class="panel">
-            <div class="panel-head">
-              <span>timeline</span>
-              <strong id="trigger-mode">-</strong>
-            </div>
-            <ol id="timeline" class="timeline"></ol>
-          </div>
-          <div class="panel">
-            <div class="panel-head">
-              <span>ranked suspects</span>
-              <strong>top 3</strong>
-            </div>
-            <div id="ranking" class="ranking"></div>
-          </div>
+        <div id="methods" class="methods"></div>
+        <div class="callout">
+          <h3>How to read this</h3>
+          <p>
+            <strong>Threshold alerting</strong> fires runbook rules in order, so
+            its first guess is decent and its second is noise — top-3 never
+            improves on top-1. <strong>Correlation</strong> ties the pipeline on
+            top-1 and loses 13 points of top-3, exactly as predicted: it cannot
+            separate a cause from its own effect. <strong>Topology</strong>
+            ignores telemetry entirely and names something on every clean run —
+            the floor any real method has to clear. <strong>Claude Opus 5</strong>,
+            given the same per-component before/after evidence, is genuinely
+            competitive — but it never sees onset timing, and onset ordering is
+            the pipeline's whole edge.
+          </p>
         </div>
       </section>
 
-      <section class="section">
-        <div class="section-head">
-          <p class="eyebrow">Telemetry</p>
-          <h2>Metric Evidence</h2>
-        </div>
-        <div id="metric-grid" class="metric-grid"></div>
-      </section>
-
+      <!-- ————————————————————————————— mechanism graph -->
       <section id="graph" class="section">
         <div class="section-head">
-          <p class="eyebrow">Online Boutique</p>
-          <h2>Dependency Graph</h2>
+          <p class="eyebrow">The reframe</p>
+          <h2>An inference server is one service — so localize inside it</h2>
+          <p class="sub">
+            A naive port of microservice RCA leaves the dependency layers with
+            nothing to operate on. The vLLM scheduler has real internal causal
+            structure that forms a DAG, so the localization domain changes from
+            <em>services</em> to <em>mechanisms</em>. The statistical core needs
+            zero modification; only the metric registry and this graph are
+            domain-specific.
+          </p>
         </div>
         <div class="graph-wrap">
-          <svg id="dependency-graph" viewBox="0 0 1040 590" role="img" aria-label="Online Boutique dependency graph"></svg>
+          <div id="mechanism-graph" class="graph-host"></div>
+          <aside class="graph-legend">
+            <p><span class="key exo"></span><strong>Exogenous</strong> — uncontrolled input. Load causes everything, so a naive onset ranking blames it for every incident. These nodes can drive a <em>capacity</em> verdict but are never named as a pathology.</p>
+            <p><span class="key sli"></span><strong>SLI</strong> — the sink being explained. Excluded from its own root-cause list, so the engine cannot answer &ldquo;TTFT is slow because TTFT is slow.&rdquo;</p>
+            <p><span class="key mech"></span><strong>Mechanism</strong> — a subsystem state backed by one or more Prometheus series. Hover any node for its metrics.</p>
+            <p class="fine">Graph rendered from <code>DomainSpec.component_graph</code> — the same object the ranking layers consume, so the picture cannot drift from the code.</p>
+          </aside>
         </div>
       </section>
 
+      <!-- ————————————————————————————— case studies -->
+      <section id="cases" class="section">
+        <div class="section-head">
+          <p class="eyebrow">Three real runs</p>
+          <h2>A win, an argument, and a silence</h2>
+          <p class="sub">
+            Replayed from committed Parquet. Every series below is measured
+            telemetry; the dashed line is where the fault window opens.
+          </p>
+        </div>
+        <div id="case-list" class="cases"></div>
+      </section>
+
+      <!-- ————————————————————————————— failures -->
+      <section id="failure" class="section">
+        <div class="section-head">
+          <p class="eyebrow">The part most projects omit</p>
+          <h2>Where it fails, and why</h2>
+          <p class="sub">
+            Rows are the injected mechanism; columns are what the pipeline
+            named. A perfect diagnoser is diagonal. This one is not, and the
+            off-diagonal mass has a single dominant explanation.
+          </p>
+        </div>
+        <div id="confusion" class="confusion-wrap"></div>
+        <div class="callout warn">
+          <h3>Measurement modality outranks causality</h3>
+          <p>
+            The pipeline ranks by onset order, and onset is measured from the
+            telemetry — not from the event. Gauges like
+            <code>kv_cache_usage_perc</code> and <code>num_requests_running</code>
+            report their new value on the very next scrape. Windowed rates and
+            histogram quantiles — <code>rate(...[30s])</code>,
+            <code>histogram_quantile</code> over buckets — only reach their new
+            value after the window fills, roughly half a window late.
+          </p>
+          <p>
+            So a gauge-backed <em>effect</em> systematically appears to precede
+            its own rate-backed <em>cause</em>. That is why
+            <code>kv_cache_pressure</code> and <code>batch_composition</code>
+            absorb most of the off-diagonal mass: they are the two mechanisms
+            read from instantaneous gauges. The pipeline compensates by shifting
+            each series back by half its window, worth +2.7 points of top-1 when
+            A/B'd on this corpus — but it is a correction, not a cure. Fixing
+            this properly means changing what is measured, not how it is ranked.
+          </p>
+        </div>
+        <div id="scenarios" class="scenario-table"></div>
+
+        <div class="callout warn">
+          <h3>A quarter of the corpus never had a clean baseline</h3>
+          <p id="quiescence-copy">—</p>
+          <p>
+            The capture protocol runs baseline, inject, fault, repeat. When the
+            previous run's load has not finished draining, the baseline window
+            opens with p99 TTFT already two orders of magnitude above its own
+            median. Layer&nbsp;1 calibrates its mean and standard deviation from
+            that window, so an inflated sigma desensitizes the detector and
+            nothing in the fault window clears threshold. The existing validity
+            check passes these runs — it looks at offered-versus-completed
+            throughput and backlog growth, and by those measures the load
+            generator was healthy; the server was simply still working off the
+            last incident.
+          </p>
+          <p>
+            The headline number above counts all
+            <span data-bind="runsScored">—</span> runs anyway. Dropping a
+            quarter of a corpus raises the score, and a change like that should
+            be argued in the open rather than applied quietly — so it is
+            reported here and left out of the totals.
+          </p>
+        </div>
+
+        <div class="callout">
+          <h3>The SLI is coarsely bucketed</h3>
+          <p>
+            <code>vllm:time_to_first_token_seconds</code> is a Prometheus
+            histogram, and p99 is interpolated from its buckets. Across these
+            traces the quantile spends most of its time pinned to two values —
+            0.248&nbsp;s and 159.2&nbsp;s — which are bucket edges, not
+            measurements. Small genuine TTFT movements are therefore invisible,
+            and the SLI reads as a step function rather than a curve. Anything
+            finer needs either custom bucket boundaries at deploy time or
+            per-request timings the metrics endpoint does not expose.
+          </p>
+        </div>
+      </section>
+
+      <!-- ————————————————————————————— pipeline -->
       <section id="pipeline" class="section">
         <div class="section-head">
-          <p class="eyebrow">Algorithm</p>
-          <h2>RCA Pipeline</h2>
+          <p class="eyebrow">Method</p>
+          <h2>Eight layers, and what each one is for</h2>
         </div>
-        <div id="pipeline-steps" class="pipeline"></div>
+        <ol class="stages">
+          <li>
+            <span class="stage-n">1</span>
+            <h3>CUSUM + block bootstrap</h3>
+            <p>Find candidate change points per metric. The detection threshold is calibrated empirically — the 95th percentile of 1000 block-bootstrap resamples of the baseline — rather than assumed. Seeded per <code>(component, metric)</code>, so the whole pipeline is reproducible.</p>
+          </li>
+          <li>
+            <span class="stage-n">2</span>
+            <h3>Markov normal model</h3>
+            <p>Drop changes that a model of learned-normal behaviour still predicts. Detectable is not the same as abnormal.</p>
+          </li>
+          <li>
+            <span class="stage-n">3</span>
+            <h3>FFT burst filter</h3>
+            <p>Remove periodic workload bursts that are expected at this frequency, so a predictable traffic shape does not register as an incident.</p>
+          </li>
+          <li>
+            <span class="stage-n">4</span>
+            <h3>Tangent rollback</h3>
+            <p>A detector fires <em>after</em> the trend starts. Roll each crossing back along its tangent to estimate when the deviation actually began — the number every later layer depends on.</p>
+          </li>
+          <li>
+            <span class="stage-n">5</span>
+            <h3>Multi-metric aggregation</h3>
+            <p>Collapse per-metric onsets into one onset per mechanism, and apply lag compensation for windowed metrics.</p>
+          </li>
+          <li>
+            <span class="stage-n">6</span>
+            <h3>Exogenous check &amp; verdict</h3>
+            <p>If the earliest onset is an exogenous node and load is climbing, the answer is <em>capacity</em> — you are overloaded, nothing is broken. If load is flat and an internal node fires first, it is a <em>pathology</em>. Distinguishing these is the difference between &ldquo;add a replica&rdquo; and &ldquo;fix your config.&rdquo;</p>
+          </li>
+          <li>
+            <span class="stage-n">7</span>
+            <h3>Propagation chain</h3>
+            <p>Order candidates by onset, treating near-simultaneous fires as concurrent rather than sequential.</p>
+          </li>
+          <li>
+            <span class="stage-n">8</span>
+            <h3>Dependency filter</h3>
+            <p>Demote any mechanism the graph explains as propagation from something earlier. This is what stops the engine from reporting a symptom chain as five separate root causes.</p>
+          </li>
+        </ol>
+        <div class="callout">
+          <h3>The effect-size gate</h3>
+          <p>
+            Layers&nbsp;1–4 test whether a change is <em>detectable</em>, never
+            whether it is <em>large</em>. On a quiet server that means a metric
+            wobbling by a hundredth of a percent produces a confident change
+            point. A minimum effect size, refit against this GPU corpus rather
+            than guessed, gates candidates before the expensive layers run.
+          </p>
+        </div>
       </section>
 
-      <section id="reproduce" class="section reproduce">
+      <!-- ————————————————————————————— boutique -->
+      <section id="boutique" class="section muted-section">
         <div class="section-head">
-          <p class="eyebrow">Reproducible locally</p>
-          <h2>Run The Real System</h2>
+          <p class="eyebrow">Second substrate</p>
+          <h2>The same engine, on eleven microservices</h2>
+          <p class="sub">
+            The engine began as microservice RCA over Google Online Boutique —
+            cAdvisor telemetry, Chaos Mesh fault injection, eleven services on
+            Kubernetes. Retargeting it at vLLM meant writing a domain adapter,
+            not a new pipeline: the metric registry and the graph below are
+            domain-specific, and layers&nbsp;1&ndash;8 are untouched.
+          </p>
+          <p class="sub">
+            It is shown here as evidence that the core generalizes across two
+            unrelated causal substrates &mdash; <strong>not</strong> as a second
+            result. There is no labelled fault corpus for this domain and
+            therefore no accuracy number, and an unmeasured demo is not a claim.
+          </p>
+        </div>
+        <div class="graph-wrap">
+          <div id="boutique-graph" class="graph-host small"></div>
+        </div>
+      </section>
+
+      <!-- ————————————————————————————— reproduce -->
+      <section id="reproduce" class="section">
+        <div class="section-head">
+          <p class="eyebrow">No GPU required</p>
+          <h2>Reproduce every number on this page</h2>
+          <p class="sub">
+            The traces are committed. Scoring replays them from Parquet, so a
+            clean clone re-derives the table above with no server, no cluster,
+            and no hardware.
+          </p>
         </div>
         <div class="command-grid">
-          <pre><code>bash infra/deploy-boutique.sh
-bash infra/deploy-monitoring.sh
-bash infra/deploy-chaos-mesh.sh</code></pre>
-          <pre><code>python eval/run_experiment_slo.py \
-  --fault cpu_hog \
-  --service cartservice \
-  --duration 60</code></pre>
+          <pre><code>git clone https://github.com/aryansharma2k2/microservice-blackbox-rca
+cd microservice-blackbox-rca
+pip install -e ".[dev]"
+
+make eval</code></pre>
+          <pre><code># re-diagnose one captured run
+python -m eval.replay traces/vllm/<span data-bind="hero.runId">—</span>
+
+# regenerate this page's data
+python -m rca_engine.scripts.gen_portfolio_data</code></pre>
         </div>
-        <p>
-          The hosted dashboard is static because free public hosting cannot run privileged
-          Kubernetes fault injection. The experiment runner remains available for local
-          kind or minikube clusters.
+        <p class="fine">
+          CI asserts the accuracy floor and the false-positive ceiling on every
+          push, so a change that quietly degrades diagnosis fails the build.
         </p>
       </section>
     </main>
+
+    <footer class="footer">
+      <div>
+        <strong>TTFT&#8209;RCA</strong>
+        <span data-bind="footer.provenance">—</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/aryansharma2k2/microservice-blackbox-rca">Source</a>
+        <a href="#top">Back to top</a>
+      </div>
+    </footer>
 
     <script src="./app.js"></script>
   </body>

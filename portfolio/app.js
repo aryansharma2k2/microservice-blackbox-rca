@@ -1,233 +1,617 @@
-const DATA_URL = "./data/portfolio-data.json";
+/* ==========================================================================
+   TTFT-RCA dashboard
+   Renders portfolio-data.json, which is generated from the committed traces by
+   `python -m rca_engine.scripts.gen_portfolio_data`. Nothing on this page is
+   hand-authored: if a number here is wrong, the pipeline produced it.
+   ========================================================================== */
 
-const $ = (selector) => document.querySelector(selector);
+const SVG = "http://www.w3.org/2000/svg";
 
-function fmtSeconds(value) {
-  return `${Number(value).toFixed(value < 10 ? 1 : 0)}s`;
+const COLOR = {
+  signal: "#5eddc6",
+  sli: "#f0b849",
+  exo: "#8b7cf0",
+  warn: "#f08a5d",
+  bad: "#e5646b",
+  line: "#1e2533",
+  text3: "#64708a",
+};
+
+const pct = (v) => (v == null ? "—" : `${(v * 100).toFixed(0)}%`);
+const pct1 = (v) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
+const fixed = (v, n = 3) => (v == null ? "—" : v.toFixed(n));
+
+/** Largest observed value, ignoring gaps. */
+function peak(values) {
+  const finite = (values || []).filter((v) => v != null);
+  return finite.length ? Math.max(...finite).toFixed(2) : "—";
 }
 
-function fmtMs(value) {
-  return `${Number(value).toFixed(1)}ms`;
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  for (const c of [].concat(children)) node.appendChild(c);
+  return node;
 }
 
-function elapsedLabel(time, start) {
-  const delta = Math.max(0, time - start);
-  return `+${delta.toFixed(delta < 10 ? 1 : 0)}s`;
+function h(tag, attrs = {}, html = "") {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else node.setAttribute(k, v);
+  }
+  if (html) node.innerHTML = html;
+  return node;
 }
 
-function pointsFor(values, width, height, pad = 12) {
-  const max = Math.max(...values, 1);
-  const min = Math.min(...values, 0);
-  const span = Math.max(max - min, 0.001);
-  return values.map((value, index) => {
-    const x = pad + (index / (values.length - 1)) * (width - pad * 2);
-    const y = height - pad - ((value - min) / span) * (height - pad * 2);
-    return [x, y];
+/* ————————————————————————————————————————————————— line chart */
+
+/**
+ * Multi-series line chart on a shared x-axis.
+ *
+ * Each series is normalized to its own min/max: these are seconds, ratios and
+ * token counts on one canvas, and the question the chart answers is "which
+ * moved first", not "which is bigger". The peak value is printed in the legend
+ * so the real magnitude is never lost.
+ */
+function lineChart(series, opts = {}) {
+  const W = opts.width || 640;
+  const H = opts.height || 220;
+  const pad = { t: 14, r: 14, b: 22, l: 14 };
+  const iw = W - pad.l - pad.r;
+  const ih = H - pad.t - pad.b;
+
+  const svg = el("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    role: "img",
+    "aria-label": opts.label || "metric time series",
+  });
+
+  // baseline / fault split
+  if (opts.boundary != null) {
+    const x = pad.l + iw * opts.boundary;
+    svg.appendChild(
+      el("rect", {
+        x: pad.l, y: pad.t, width: x - pad.l, height: ih,
+        fill: "rgba(255,255,255,.015)",
+      })
+    );
+    svg.appendChild(
+      el("line", {
+        x1: x, y1: pad.t - 4, x2: x, y2: pad.t + ih,
+        stroke: COLOR.text3, "stroke-width": 1, "stroke-dasharray": "3 3",
+      })
+    );
+    svg.appendChild(
+      el("text", {
+        x: x + 6, y: pad.t + 8,
+        fill: COLOR.text3, "font-size": 9, "font-family": "ui-monospace, monospace",
+      })
+    ).textContent = "fault window";
+  }
+
+  // horizontal guides
+  for (let i = 1; i < 4; i++) {
+    const y = pad.t + (ih * i) / 4;
+    svg.appendChild(
+      el("line", { x1: pad.l, y1: y, x2: pad.l + iw, y2: y, stroke: COLOR.line, "stroke-width": 1 })
+    );
+  }
+
+  series.forEach((s) => {
+    const vals = s.values;
+    if (!vals || vals.length < 2) return;
+
+    // null is a gap, not a zero: a histogram quantile over a window with no
+    // requests has no value, and drawing it as 0 would invent a latency cliff
+    // that never happened. Scale over the observed points and break the line.
+    const finite = vals.filter((v) => v != null);
+    if (finite.length < 2) return;
+    const lo = Math.min(...finite);
+    const hi = Math.max(...finite);
+    const span = hi - lo || 1;
+
+    const segments = [];
+    let current = [];
+    vals.forEach((v, i) => {
+      if (v == null) {
+        if (current.length) segments.push(current);
+        current = [];
+        return;
+      }
+      const x = pad.l + (iw * i) / (vals.length - 1);
+      const y = pad.t + ih - ((v - lo) / span) * ih;
+      current.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    });
+    if (current.length) segments.push(current);
+
+    segments.forEach((pts) => {
+      if (pts.length < 2) return;
+      svg.appendChild(
+        el("polyline", {
+          points: pts.join(" "),
+          fill: "none", stroke: s.color, "stroke-width": s.width || 1.8,
+          "stroke-linejoin": "round", "stroke-linecap": "round",
+          opacity: s.dim ? 0.55 : 1,
+        })
+      );
+    });
+  });
+
+  return svg;
+}
+
+function seriesColor(component, sliNode, index) {
+  if (component === sliNode) return COLOR.sli;
+  return [COLOR.signal, COLOR.exo, COLOR.warn, "#6aa9f0"][index % 4];
+}
+
+/* ————————————————————————————————————————————————— layered DAG */
+
+/**
+ * Longest-path layering. A node sits one column right of its deepest parent,
+ * so every edge points forward and the picture reads left-to-right as
+ * causality does.
+ */
+function layer(nodes) {
+  const byName = new Map(nodes.map((n) => [n.name, n]));
+  const depth = new Map();
+
+  const resolve = (name, seen = new Set()) => {
+    if (depth.has(name)) return depth.get(name);
+    if (seen.has(name)) return 0; // defensive: a cycle would hang the layout
+    seen.add(name);
+    const parents = nodes.filter((n) => n.edges.includes(name));
+    const d = parents.length
+      ? Math.max(...parents.map((p) => resolve(p.name, seen) + 1))
+      : 0;
+    depth.set(name, d);
+    return d;
+  };
+  nodes.forEach((n) => resolve(n.name));
+
+  const columns = [];
+  nodes.forEach((n) => {
+    const d = depth.get(n.name);
+    (columns[d] ||= []).push(n);
+  });
+  return { columns, depth, byName };
+}
+
+function dagSvg(nodes, opts = {}) {
+  const { columns } = layer(nodes);
+  const showMetrics = opts.showMetrics !== false;
+
+  const NW = opts.nodeWidth || 152;
+  const NH = showMetrics ? 42 : 28;
+  const GAPX = opts.gapX || 62;
+  const GAPY = 16;
+  const pad = 18;
+
+  const rows = Math.max(...columns.map((c) => c.length));
+  const W = pad * 2 + columns.length * NW + (columns.length - 1) * GAPX;
+  const H = pad * 2 + rows * NH + (rows - 1) * GAPY;
+
+  const pos = new Map();
+  columns.forEach((col, ci) => {
+    const colH = col.length * NH + (col.length - 1) * GAPY;
+    const y0 = pad + (H - pad * 2 - colH) / 2;
+    col.forEach((n, ri) => {
+      pos.set(n.name, {
+        x: pad + ci * (NW + GAPX),
+        y: y0 + ri * (NH + GAPY),
+        node: n,
+      });
+    });
+  });
+
+  const svg = el("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    role: "img",
+    "aria-label": opts.label || "causal graph",
+  });
+
+  // edges first so nodes paint over them
+  nodes.forEach((n) => {
+    const from = pos.get(n.name);
+    if (!from) return;
+    n.edges.forEach((target) => {
+      const to = pos.get(target);
+      if (!to) return;
+      const x1 = from.x + NW;
+      const y1 = from.y + NH / 2;
+      const x2 = to.x;
+      const y2 = to.y + NH / 2;
+      const mid = (x1 + x2) / 2;
+      svg.appendChild(
+        el("path", {
+          d: `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`,
+          class: n.exogenous ? "edge from-exo" : "edge",
+        })
+      );
+    });
+  });
+
+  nodes.forEach((n) => {
+    const p = pos.get(n.name);
+    if (!p) return;
+    const accent = n.exogenous ? COLOR.exo : n.sli ? COLOR.sli : COLOR.signal;
+    const g = el("g", { class: "node-box" });
+    g.appendChild(
+      el("rect", {
+        x: p.x, y: p.y, width: NW, height: NH, rx: 7,
+        fill: "#0f131c", stroke: accent, "stroke-width": 1,
+        "stroke-opacity": n.sli || n.exogenous ? 0.9 : 0.42,
+      })
+    );
+    g.appendChild(
+      el("rect", { x: p.x, y: p.y, width: 3, height: NH, rx: 1.5, fill: accent })
+    );
+    const label = el("text", {
+      x: p.x + 11, y: p.y + (showMetrics ? 17 : 18), class: "node-label",
+    });
+    label.textContent = n.name;
+    g.appendChild(label);
+
+    if (showMetrics && n.metrics && n.metrics.length) {
+      const m = el("text", { x: p.x + 11, y: p.y + 31, class: "node-metrics" });
+      const joined = n.metrics.join(", ");
+      m.textContent = joined.length > 24 ? `${n.metrics.length} metrics` : joined;
+      g.appendChild(m);
+    }
+
+    const title = el("title");
+    title.textContent = `${n.name}${
+      n.metrics && n.metrics.length ? `\n${n.metrics.join("\n")}` : ""
+    }`;
+    g.appendChild(title);
+    svg.appendChild(g);
+  });
+
+  return svg;
+}
+
+/* ————————————————————————————————————————————————— sections */
+
+const METHOD_NOTE = {
+  pipeline: "eight-layer change-point localization",
+  threshold: "static runbook rules, in order",
+  correlation: "rank by |r| against the SLI",
+  topology: "always blame the graph root",
+  llm: "Claude Opus 5, same evidence",
+};
+
+function renderMethods(data) {
+  const host = document.getElementById("methods");
+  if (!host) return;
+  host.innerHTML = "";
+
+  const best = {
+    top1: Math.max(...data.methods.map((m) => m.top1)),
+    top3: Math.max(...data.methods.map((m) => m.top3)),
+    mrr: Math.max(...data.methods.map((m) => m.mrr)),
+  };
+
+  const head = h("div", { class: "method-row head" });
+  ["method", "top-3 accuracy", "top-1", "top-3", "MRR", "FPR"].forEach((t) =>
+    head.appendChild(h("div", { class: t === "method" ? "" : "num" }, t))
+  );
+  host.appendChild(head);
+
+  data.methods.forEach((m) => {
+    const row = h("div", {
+      class: `method-row${m.name === "pipeline" ? " is-pipeline" : ""}`,
+    });
+
+    const name = h("div", { class: "method-name" });
+    name.appendChild(h("b", {}, m.name));
+    if (METHOD_NOTE[m.name]) {
+      name.appendChild(h("span", { class: "method-note" }, METHOD_NOTE[m.name]));
+    }
+    row.appendChild(name);
+
+    const bar = h("div", { class: "bar" });
+    bar.appendChild(h("i", { style: `width:${(m.top3 * 100).toFixed(1)}%` }));
+    row.appendChild(bar);
+
+    const cell = (v, fmt, isBest, isBad) =>
+      h(
+        "div",
+        { class: `num${isBest ? " best" : ""}${isBad ? " bad" : ""}` },
+        fmt(v)
+      );
+
+    row.appendChild(cell(m.top1, pct, m.top1 === best.top1));
+    row.appendChild(cell(m.top3, pct, m.top3 === best.top3));
+    row.appendChild(cell(m.mrr, (v) => fixed(v, 3), m.mrr === best.mrr));
+    row.appendChild(
+      cell(m.falsePositiveRate, pct, m.falsePositiveRate === 0, m.falsePositiveRate > 0)
+    );
+    host.appendChild(row);
   });
 }
 
-function pathFromPoints(points) {
-  return points.map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
-}
+function renderCases(data) {
+  const host = document.getElementById("case-list");
+  if (!host) return;
+  const sli = data.mechanismGraph.nodes.find((n) => n.sli)?.name;
+  host.innerHTML = "";
 
-function renderHeroChart(data) {
-  const svg = $("#hero-chart");
-  const width = 620;
-  const height = 280;
-  const padX = 32;
-  const chartTop = 82;
-  const chartBottom = height - 32;
-  const values = [26, 28, 29, 31, 30, 34, 48, 58, 63, 57, 52, 44, 39, 34, 31, 29];
-  const max = Math.max(...values, data.run.sloThresholdMs);
-  const min = Math.min(...values, data.run.baselineP95Ms);
-  const span = Math.max(max - min, 0.001);
-  const chartHeight = chartBottom - chartTop;
-  const pts = values.map((value, index) => {
-    const x = padX + (index / (values.length - 1)) * (width - padX * 2);
-    const y = chartBottom - ((value - min) / span) * chartHeight;
-    return [x, y];
+  data.caseStudies.forEach((c) => {
+    const card = h("div", { class: "case" });
+
+    const tag = c.ranked.length === 0
+      ? '<strong class="tag null">named nothing</strong>'
+      : c.correct
+      ? '<strong class="tag ok">correct</strong>'
+      : '<strong class="tag miss">scored as a miss</strong>';
+
+    card.appendChild(
+      h(
+        "div",
+        { class: "case-head" },
+        `<div><h3>${c.title}</h3>
+         <div class="meta">run ${c.runId} · scenario ${c.scenario} · verdict ${c.verdict}</div></div>
+         ${tag}`
+      )
+    );
+
+    const body = h("div", { class: "case-body" });
+
+    // chart
+    const chartCell = h("div", { class: "case-chart" });
+    const flat = [];
+    c.series.forEach((s) => {
+      Object.entries(s.metrics).forEach(([metric, values]) => {
+        flat.push({
+          name: metric,
+          component: s.component,
+          values,
+          color: seriesColor(s.component, sli, flat.length),
+          width: s.component === sli ? 2.2 : 1.7,
+        });
+      });
+    });
+    chartCell.appendChild(
+      lineChart(flat, { boundary: c.faultBoundary, label: `${c.scenario} telemetry` })
+    );
+    const legend = h("div", { class: "legend-inline" });
+    flat.forEach((s) => {
+      legend.appendChild(
+        h(
+          "span",
+          {},
+          `<i style="background:${s.color}"></i>${s.name} <span style="opacity:.6">(peak ${peak(
+            s.values
+          )})</span>`
+        )
+      );
+    });
+    chartCell.appendChild(legend);
+    body.appendChild(chartCell);
+
+    // side
+    const side = h("div", { class: "case-side" });
+    side.appendChild(h("p", { class: "case-note" }, c.note));
+
+    if (c.ranked.length) {
+      const list = h("ul", { class: "ranked" });
+      c.ranked.forEach((r) => {
+        const isHit = r.component === c.expected;
+        const li = h("li", { class: isHit ? "hit" : "" });
+        li.appendChild(h("span", { class: "r" }, `#${r.rank}`));
+        li.appendChild(h("span", { class: "c" }, r.component));
+        li.appendChild(
+          h("span", { class: "onset" }, `+${r.onsetOffsetSeconds.toFixed(0)}s`)
+        );
+        list.appendChild(li);
+      });
+      side.appendChild(list);
+      // Ranks come from the full candidate list, so a gap means Layer 8 or the
+      // eligibility rule removed the entry that held that number. Say so —
+      // otherwise "#1, #2, #4" reads as a rendering bug.
+      const shown = c.ranked.map((r) => r.rank);
+      if (Math.max(...shown) > shown.length) {
+        side.appendChild(
+          h(
+            "p",
+            { class: "fine", style: "margin:-.4rem 0 1rem" },
+            "Missing ranks are candidates removed by the dependency filter, or " +
+              "nodes never eligible as a root cause — the SLI itself and exogenous inputs."
+          )
+        );
+      }
+    } else {
+      side.appendChild(
+        h("div", { class: "ranked-empty" }, "no eligible candidate — silent")
+      );
+    }
+
+    const expectedText = c.expected
+      ? `expected <b>${c.expected}</b>`
+      : "expected <b>nothing</b>";
+    side.appendChild(
+      h(
+        "div",
+        { class: "verdict-line" },
+        `<span>${expectedText}</span><span>verdict <b>${c.verdict}</b> / ${c.expectedVerdict}</span>`
+      )
+    );
+    body.appendChild(side);
+
+    card.appendChild(body);
+    host.appendChild(card);
   });
-  const thresholdY = chartBottom - ((data.run.sloThresholdMs - min) / span) * chartHeight;
-  const violationPoint = pts[6];
-  const line = pathFromPoints(pts);
-  const area = `${line} L ${width - padX} ${chartBottom} L ${padX} ${chartBottom} Z`;
-
-  svg.innerHTML = `
-    <defs>
-      <linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0%" stop-color="#78c8a2" stop-opacity="0.45"></stop>
-        <stop offset="100%" stop-color="#78c8a2" stop-opacity="0"></stop>
-      </linearGradient>
-    </defs>
-    <rect x="32" y="20" width="360" height="34" rx="17" fill="#172820" stroke="#3e5549" stroke-width="1"></rect>
-    <line x1="52" y1="37" x2="82" y2="37" stroke="#f2c66d" stroke-width="2.5" stroke-dasharray="7 6"></line>
-    <text x="96" y="42" fill="#f2c66d" font-size="12" font-weight="800">SLO threshold</text>
-    <circle cx="236" cy="37" r="6" fill="#f08b70"></circle>
-    <text x="252" y="42" fill="#f6f4ed" font-size="12" font-weight="800">Violation</text>
-    <path d="${area}" fill="url(#areaFill)"></path>
-    <line x1="${padX}" y1="${thresholdY}" x2="${width - padX}" y2="${thresholdY}" stroke="#f2c66d" stroke-width="2" stroke-dasharray="8 8"></line>
-    <path d="${line}" fill="none" stroke="#9ee3bd" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>
-    <line x1="${violationPoint[0]}" y1="${chartTop}" x2="${violationPoint[0]}" y2="${chartBottom}" stroke="#f08b70" stroke-width="1.5" stroke-dasharray="5 8" opacity="0.85"></line>
-    <circle cx="${violationPoint[0]}" cy="${violationPoint[1]}" r="7" fill="#f08b70"></circle>
-  `;
 }
 
-function renderTimeline(data) {
-  const start = data.run.timeline[0].time;
-  $("#timeline").innerHTML = data.run.timeline.map((event) => `
-    <li>
-      <time>${elapsedLabel(event.time, start)}</time>
-      <div>
-        <strong>${event.label}</strong>
-        <span>${new Date(event.time * 1000).toISOString().replace(".000", "")}</span>
-      </div>
-    </li>
-  `).join("");
+function renderConfusion(data) {
+  const host = document.getElementById("confusion");
+  if (!host) return;
+
+  const rows = Object.keys(data.confusion);
+  const cols = [
+    ...new Set(rows.flatMap((r) => Object.keys(data.confusion[r]))),
+  ].sort();
+
+  const table = h("table", { class: "confusion" });
+  const thead = h("thead");
+  const hr = h("tr");
+  hr.appendChild(h("th", {}, "injected ↓ / named →"));
+  cols.forEach((c) => hr.appendChild(h("th", {}, c)));
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = h("tbody");
+  rows.forEach((r) => {
+    const tr = h("tr");
+    tr.appendChild(h("th", {}, r));
+    cols.forEach((c) => {
+      const v = data.confusion[r][c] || 0;
+      const cls = v === 0 ? "zero" : r === c ? "diag" : "off";
+      tr.appendChild(h("td", { class: cls }, v === 0 ? "·" : String(v)));
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  host.innerHTML = "";
+  host.appendChild(table);
 }
 
-function renderRanking(data) {
-  $("#ranking").innerHTML = data.rankedServices.map((item) => `
-    <article class="rank-row">
-      <span class="rank-badge">${item.rank}</span>
-      <div>
-        <h3>${item.service}</h3>
-        <p>${item.abnormalMetrics.join(", ")} - ${item.note}</p>
-      </div>
-      <div class="confidence">${Math.round(item.confidence * 100)}%</div>
-    </article>
-  `).join("");
+function renderScenarios(data) {
+  const host = document.getElementById("scenarios");
+  if (!host) return;
+  const table = h("table", { class: "scenarios" });
+  table.appendChild(
+    h(
+      "thead",
+      {},
+      "<tr><th>scenario</th><th>runs</th><th>injected mechanism</th><th>what the pipeline named</th><th style='text-align:right'>top-1</th></tr>"
+    )
+  );
+  const tbody = h("tbody");
+  data.perScenario.forEach((s) => {
+    const cls = s.top1 === 1 ? "perfect" : s.top1 === 0 ? "zero" : "";
+    const preds = Object.entries(s.predictions)
+      .map(([k, v]) => (v > 1 ? `${k} ×${v}` : k))
+      .join(", ");
+    const tr = h("tr", { class: cls });
+    tr.appendChild(h("td", { class: "mono" }, s.scenario));
+    tr.appendChild(h("td", {}, String(s.runs)));
+    tr.appendChild(h("td", { class: "mono" }, s.expected || "—"));
+    tr.appendChild(h("td", { class: "mono" }, preds));
+    tr.appendChild(h("td", { class: "score" }, pct(s.top1)));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  host.innerHTML = "";
+  host.appendChild(table);
 }
 
-function renderSparkline(series) {
-  const width = 280;
-  const height = 128;
-  const pts = pointsFor(series.values, width, height, 14);
-  const line = pathFromPoints(pts);
-  const area = `${line} L ${width - 14} ${height - 14} L 14 ${height - 14} Z`;
-  const peak = pts[series.values.indexOf(Math.max(...series.values))];
-  return `
-    <svg class="spark" viewBox="0 0 ${width} ${height}" role="img" aria-label="${series.service} ${series.metric} sparkline">
-      <path d="${area}" fill="#dcebe4"></path>
-      <path d="${line}" fill="none" stroke="#2f7d58" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"></path>
-      <line x1="116" x2="116" y1="10" y2="${height - 10}" stroke="#c95f45" stroke-width="2" stroke-dasharray="5 6"></line>
-      <circle cx="${peak[0]}" cy="${peak[1]}" r="5" fill="#315f9f"></circle>
-    </svg>
-  `;
-}
-
-function renderMetrics(data) {
-  $("#metric-grid").innerHTML = data.metricSeries.map((series) => `
-    <article class="metric-card">
-      <h3>${series.service}</h3>
-      <p class="metric-meta">${series.metric} normalized signal</p>
-      ${renderSparkline(series)}
-    </article>
-  `).join("");
-}
-
-function nodeClass(name, data) {
-  if (name === data.run.targetService) return "target";
-  if (data.rankedServices.some((svc) => svc.service === name)) return "suspect";
-  return "";
-}
-
-function renderGraph(data) {
-  const svg = $("#dependency-graph");
-  const nodeWidth = 196;
-  const nodeHeight = 62;
-  const positions = {
-    frontend: [80, 250],
-    productcatalogservice: [330, 70],
-    recommendationservice: [330, 170],
-    cartservice: [330, 275],
-    checkoutservice: [330, 395],
-    adservice: [330, 500],
-    "redis-cart": [595, 275],
-    currencyservice: [595, 90],
-    shippingservice: [595, 190],
-    paymentservice: [595, 395],
-    emailservice: [595, 500]
+function bind(data) {
+  const hero = data.caseStudies[0];
+  const values = {
+    runsScored: String(data.generatedFrom.runsScored),
+    cleanRuns: String(data.generatedFrom.cleanRuns),
+    "headline.top1": pct1(data.headline.top1),
+    "headline.top3": pct1(data.headline.top3),
+    "headline.mrr": fixed(data.headline.mrr, 3),
+    "headline.fpr": pct(data.headline.falsePositiveRate),
+    "hero.runId": hero.runId,
+    fprNote: `silent on all ${data.generatedFrom.cleanRuns} clean runs`,
+    "footer.provenance":
+      `${data.generatedFrom.runsScored} labelled runs · ` +
+      `${data.generatedFrom.mechanisms} mechanisms · ` +
+      `${data.generatedFrom.cleanRuns} clean · generated from committed traces`,
   };
-  const displayNames = {
-    productcatalogservice: ["product catalog", "service"],
-    recommendationservice: ["recommendation", "service"],
-    checkoutservice: ["checkout", "service"],
-    currencyservice: ["currency", "service"],
-    paymentservice: ["payment", "service"],
-    shippingservice: ["shipping", "service"],
-    emailservice: ["email", "service"],
-    cartservice: ["cart", "service"],
-    adservice: ["ad", "service"],
-    frontend: ["frontend"],
-    "redis-cart": ["redis-cart"]
-  };
-  const serviceByName = Object.fromEntries(data.services.map((service) => [service.name, service]));
-  const edges = data.services.flatMap((service) => service.calls.map((target) => [service.name, target]));
-  const edgeMarkup = edges.map(([source, target]) => {
-    const [x1, y1] = positions[source];
-    const [x2, y2] = positions[target];
-    const mid = Math.max(24, (x2 - x1) / 2);
-    const sourceY = y1 + nodeHeight / 2;
-    const targetY = y2 + nodeHeight / 2;
-    return `<path class="edge" d="M ${x1 + nodeWidth} ${sourceY} C ${x1 + nodeWidth + mid} ${sourceY}, ${x2 - mid} ${targetY}, ${x2} ${targetY}"></path>`;
-  }).join("");
-  const nodeMarkup = Object.entries(positions).map(([name, [x, y]]) => {
-    const group = serviceByName[name]?.group || "service";
-    const lines = displayNames[name] || [name];
-    const lineMarkup = lines.map((line, index) => (
-      `<tspan x="16" dy="${index === 0 ? 0 : 16}">${line}</tspan>`
-    )).join("");
-    const labelY = lines.length > 1 ? 22 : 30;
-    return `
-      <g class="node ${nodeClass(name, data)}" transform="translate(${x} ${y})">
-        <rect width="${nodeWidth}" height="${nodeHeight}" rx="8"></rect>
-        <text class="node-name" y="${labelY}">${lineMarkup}</text>
-        <text class="node-group" x="16" y="${nodeHeight - 12}">${group}</text>
-      </g>
-    `;
-  }).join("");
-  svg.innerHTML = `
-    <defs>
-      <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-        <path d="M0,0 L0,6 L9,3 z" fill="#9aa79f"></path>
-      </marker>
-    </defs>
-    ${edgeMarkup}
-    ${nodeMarkup}
-  `;
+  document.querySelectorAll("[data-bind]").forEach((node) => {
+    const key = node.getAttribute("data-bind");
+    if (values[key] != null) node.textContent = values[key];
+  });
 }
 
-function renderPipeline(data) {
-  $("#pipeline-steps").innerHTML = data.pipeline.map((step, index) => `
-    <article class="pipeline-step">
-      <span>${index + 1}</span>
-      <h3>${step.name}</h3>
-      <p>${step.detail}</p>
-    </article>
-  `).join("");
+function renderQuiescence(data) {
+  const node = document.getElementById("quiescence-copy");
+  const q = data.baselineQuiescence;
+  if (!node || !q) return;
+  node.innerHTML =
+    `On <strong>${q.contaminatedRuns} of ${q.quietRuns + q.contaminatedRuns}</strong> ` +
+    `scored runs the SLI was already more than ${q.ratioThreshold}&times; its own ` +
+    `median when the baseline window opened. Top-1 on those runs is ` +
+    `<strong>${pct(q.contaminatedTop1)}</strong>. On the ${q.quietRuns} runs that ` +
+    `did start quiet it is <strong>${pct(q.quietTop1)}</strong> — so this one ` +
+    `defect in the capture protocol, not the ranking logic, accounts for much ` +
+    `of the gap between the headline number and what the method does on clean input.`;
 }
 
-function hydrateStats(data) {
-  $("#stat-fault").textContent = data.run.fault;
-  $("#stat-latency").textContent = fmtSeconds(data.run.diagnosisLatencySeconds);
-  $("#stat-runtime").textContent = fmtSeconds(data.run.rcaRuntimeSeconds);
-  $("#slo-threshold").textContent = `${fmtMs(data.run.baselineP95Ms)} baseline / ${fmtMs(data.run.sloThresholdMs)} SLO`;
-  $("#trigger-mode").textContent = data.run.triggerMode.replace("_", " ");
+function renderHero(data) {
+  const host = document.getElementById("hero-chart");
+  if (!host) return;
+  const c = data.caseStudies[0];
+  const sli = data.mechanismGraph.nodes.find((n) => n.sli)?.name;
+  const flat = [];
+  c.series.forEach((s) => {
+    Object.entries(s.metrics).forEach(([metric, values]) => {
+      flat.push({
+        name: metric,
+        values,
+        color: seriesColor(s.component, sli, flat.length),
+        width: s.component === sli ? 2.4 : 1.9,
+      });
+    });
+  });
+  host.innerHTML = "";
+  host.appendChild(
+    lineChart(flat, { boundary: c.faultBoundary, width: 640, height: 236 })
+  );
+  const legend = h("div", { class: "legend-inline" });
+  flat.forEach((s) =>
+    legend.appendChild(
+      h("span", {}, `<i style="background:${s.color}"></i>${s.name}`)
+    )
+  );
+  host.appendChild(legend);
 }
 
-async function init() {
-  const response = await fetch(DATA_URL);
-  const data = await response.json();
-  hydrateStats(data);
-  renderHeroChart(data);
-  renderTimeline(data);
-  renderRanking(data);
-  renderMetrics(data);
-  renderGraph(data);
-  renderPipeline(data);
+async function main() {
+  let data;
+  try {
+    const res = await fetch("./data/portfolio-data.json", { cache: "no-cache" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    document.body.prepend(
+      h(
+        "div",
+        {
+          style:
+            "padding:1rem;background:#2a1416;color:#e5646b;font-family:ui-monospace,monospace;font-size:.85rem",
+        },
+        `Could not load portfolio-data.json (${err.message}). Serve this directory over HTTP: <code>python3 -m http.server 4173 --directory portfolio</code>`
+      )
+    );
+    return;
+  }
+
+  bind(data);
+  renderQuiescence(data);
+  renderHero(data);
+  renderMethods(data);
+  renderCases(data);
+  renderConfusion(data);
+  renderScenarios(data);
+
+  const mech = document.getElementById("mechanism-graph");
+  if (mech) mech.appendChild(dagSvg(data.mechanismGraph.nodes, { label: "vLLM mechanism graph" }));
+
+  const boutique = document.getElementById("boutique-graph");
+  if (boutique) {
+    boutique.appendChild(
+      dagSvg(
+        data.boutiqueGraph.nodes.map((n) => ({ ...n, metrics: [] })),
+        { showMetrics: false, nodeWidth: 168, gapX: 54, label: "Online Boutique dependency graph" }
+      )
+    );
+  }
 }
 
-init().catch((error) => {
-  console.error(error);
-  document.body.insertAdjacentHTML("afterbegin", '<p class="load-error">Could not load dashboard data.</p>');
-});
+main();
