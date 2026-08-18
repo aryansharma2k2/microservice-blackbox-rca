@@ -401,16 +401,15 @@
     * { transition: none !important; animation: none !important; }
   }
 </style>
-
 <div class="page">
   <header class="masthead">
     <p class="kicker">Inference-serving reliability &#183; measured</p>
     <h1>Localizing p99 TTFT inside a vLLM server</h1>
     <p class="deck">
-      Time-to-first-token is the SLI every LLM-serving team alerts on and
-      nobody can attribute. This is what happened when I pointed a change-point
-      pipeline at the inside of the server, built a labelled fault corpus on a
-      real GPU, and measured how often it was right.
+      Every LLM-serving team alerts on time-to-first-token. Almost nobody can
+      say what made it spike. I pointed a change-point pipeline at the inside
+      of the server, built a labelled fault corpus on a real GPU, and measured
+      how often it got the answer right.
     </p>
 
     <div class="strip">
@@ -423,56 +422,64 @@
 
   <div class="flow">
 
-    <!-- --- 1 -->
+    <!-- 1 -->
     <section class="sec">
       <p class="mark">&#167; 1</p>
       <h2>The suspects all look the same</h2>
     </section>
 
     <p>
-      When p99 TTFT spikes, the on-call engineer opens a Grafana board and
-      guesses. The candidates are KV cache pressure, batch scheduling stalls,
-      prefix-cache collapse, and preemption &#8212; and the reason the guess is hard
-      is not that the telemetry is missing. It is all there, at one-second
-      resolution. The problem is that these mechanisms are
-      <em>observationally confusable</em>: they share symptoms, and they cause
-      one another.
+      p99 TTFT spikes. You open the Grafana board. Now what?
     </p>
     <p>
-      Preemption is simultaneously a cause of latency and an effect of cache
-      pressure. So ranking metrics by correlation with the SLI implicates both
-      and separates neither &#8212; the correlation is real in both directions. A
-      static threshold on <code>kv_cache_usage_perc</code> fires during a plain
-      load ramp, during a prefix-cache collapse, and during a genuine
-      misconfiguration, with no way to tell you which one you are in.
+      There are four usual suspects: KV cache pressure, batch scheduling
+      stalls, prefix-cache collapse, and preemption. The telemetry to tell
+      them apart is not missing. It is all there, at one-second resolution.
+      The problem is that all four look nearly identical from the outside,
+      and each one can cause the others.
     </p>
     <p>
-      That is the gap this project aims at: not detecting that something is
-      wrong, which is easy, but attributing it, which is not.
+      Preemption is a good example. It slows requests down, so it is a cause
+      of latency. It also happens because the cache filled up, so it is an
+      effect of cache pressure. Rank your metrics by how well they correlate
+      with TTFT and both light up. The correlation is real in both directions,
+      which is exactly why it cannot tell you which came first.
+    </p>
+    <p>
+      Thresholds have the same problem from the other side. Alert on
+      <code>kv_cache_usage_perc</code> and it fires during a plain traffic
+      ramp, during a prefix-cache collapse, and during a genuine
+      misconfiguration. You learn that something is wrong. You already knew
+      that.
+    </p>
+    <p>
+      So the target here is not detection. Detection is easy. The target is
+      attribution.
     </p>
 
-    <!-- --- 2 -->
+    <!-- 2 -->
     <section class="sec">
       <p class="mark">&#167; 2</p>
       <h2>An inference server is one service, so localize inside it</h2>
     </section>
 
     <p>
-      I started from an FChain-style pipeline built for microservice RCA:
-      eight layers that find change points in per-service metrics, estimate
-      when each deviation actually began, and rank services by onset order
-      filtered through a call graph.
+      I started from an FChain-style pipeline built for microservice RCA. It
+      finds change points in each service's metrics, estimates when each
+      deviation really began, and ranks services by which moved first,
+      filtered through the call graph.
     </p>
     <p>
-      Pointing that at vLLM naively does not work. An inference server is a
-      single process, so there is nothing to localize <em>across</em>, and the
-      dependency layers have no graph to operate on. The retarget only becomes
-      interesting with a reframe: the localization domain changes from
-      <strong>services</strong> to <strong>mechanisms</strong>. The vLLM
-      scheduler has genuine internal causal structure &#8212; cache occupancy drives
-      preemption, preemption drives queueing, queueing drives TTFT &#8212; and that
-      structure is a DAG. Onset ordering and graph filtering apply to it
-      unchanged.
+      Pointing that at vLLM does not work on its own. An inference server is a
+      single process. There are no services to rank, and the dependency layers
+      have no graph to walk.
+    </p>
+    <p>
+      The fix is to change what gets localized. Instead of services, rank
+      <strong>mechanisms</strong>. The vLLM scheduler has real internal causal
+      structure: cache occupancy drives preemption, preemption drives
+      queueing, queueing drives TTFT. That structure is a DAG, and everything
+      the pipeline already does to a service graph works on it unchanged.
     </p>
 
     <figure class="wide graph">
@@ -523,83 +530,87 @@
       </div>
       <figcaption>
         <b>Twelve mechanism nodes, laid out by longest path.</b> Each is backed
-        by one or more Prometheus series; edges encode &#8220;A can cause B.&#8221; The
-        statistical core needed no modification to retarget &#8212; only this graph
-        and the metric registry are domain-specific. The picture is rendered
-        from the same object the ranking layers consume, so it cannot drift
-        from the code.
+        by one or more Prometheus series. Edges mean &#8220;A can cause B.&#8221;
+        The statistical core did not change at all to retarget. Only this graph
+        and the metric registry are specific to vLLM. The diagram is drawn from
+        the same object the ranking code reads, so it cannot drift out of date.
       </figcaption>
     </figure>
 
     <p>
-      Two things fall out of the domain that a generic pipeline could not have
-      known.
+      Two useful things fall out of the domain that a generic pipeline would
+      never know about.
     </p>
 
-    <h3>TTFT decomposes natively</h3>
+    <h3>TTFT splits in two, for free</h3>
     <p>
-      vLLM exposes <code>request_queue_time_seconds</code> and
+      vLLM already exports <code>request_queue_time_seconds</code> and
       <code>request_prefill_time_seconds</code> as separate histograms. TTFT is
-      approximately their sum, so the split partitions the hypothesis space
-      before any inference runs: queue-dominated points at admission-side
-      causes, prefill-dominated at compute-side. That is free information the
-      metric endpoint hands you, and most dashboards throw it away by plotting
-      only the total.
+      roughly their sum. That single split cuts the hypothesis space in half
+      before any analysis runs. If the time went to queueing, the cause is on
+      the admission side. If it went to prefill, the cause is on the compute
+      side. Most dashboards throw this away by plotting only the total.
     </p>
 
     <h3>Load causes everything, so load cannot be the answer</h3>
     <p>
-      Rank by earliest onset and <code>arrival_load</code> wins every incident,
-      because in a real system traffic moves first. Marking nodes as
-      <strong>exogenous</strong> &#8212; uncontrolled inputs rather than faults &#8212;
-      fixes this, and produces a second kind of answer worth having. If the
-      earliest onset is exogenous and load is climbing, the verdict is
-      <strong>capacity</strong>: you are simply overloaded and nothing is
-      broken. If load is flat and an internal node fires first, it is a
-      <strong>pathology</strong>. That is the difference between &#8220;add a
-      replica&#8221; and &#8220;fix your config,&#8221; and it is the distinction an alert
-      threshold structurally cannot make.
+      Rank purely by which signal moved first and <code>arrival_load</code>
+      wins every single incident. Traffic moves first in real systems. That is
+      not a finding, it is a tautology.
+    </p>
+    <p>
+      Marking those nodes as <strong>exogenous</strong> fixes it. They are
+      inputs you do not control, not defects. It also buys a second kind of
+      answer. If the first thing to move is exogenous and load is climbing,
+      the verdict is <strong>capacity</strong>: you are being asked for more
+      than you can serve, and nothing is broken. If load is flat and something
+      internal moves first, it is a <strong>pathology</strong>. That is the
+      difference between adding a replica and fixing your config, and a
+      threshold alert cannot make it.
     </p>
 
-    <!-- --- 3 -->
+    <!-- 3 -->
     <section class="sec">
       <p class="mark">&#167; 3</p>
       <h2>What I actually measured</h2>
     </section>
 
     <p>
-      The claim I wanted to be able to defend was not &#8220;this works&#8221; but &#8220;this
-      works <em>this often</em>, against these alternatives.&#8221; That requires a
-      labelled corpus, which is the part most RCA projects skip.
+      I did not want to claim that this works. I wanted to claim that it works
+      <em>this often</em>, against these alternatives. That needs a labelled
+      corpus, and building one is the step most RCA write-ups skip.
     </p>
     <p>
-      One L4 GPU, one session: 38 scorable runs across seven fault scenarios
-      covering five distinct mechanisms, plus eight clean runs so the
-      false-positive rate is measurable rather than assumed. Most faults are
-      <strong>workload shaping</strong> rather than infrastructure chaos &#8212; a
-      prefix-diversity attack that gives every request a unique prefix, a
-      long-output burst that makes sequences hold their blocks for minutes, a
-      bimodal short/long mix. These are cheaper and far more reproducible than
-      killing containers. Config-side faults restart the server degraded, and
-      each restart is a labelled fault.
+      One L4 GPU, one session. 38 scorable runs across seven fault scenarios,
+      covering five distinct mechanisms. Eight of the runs are clean, with
+      nothing wrong at all, so the false-positive rate is measured rather than
+      assumed.
     </p>
     <p>
-      Every run writes <code>metrics.parquet</code> and
-      <code>ground_truth.json</code>, both committed. Scoring replays from
-      disk, so every number here is re-derivable with no GPU, no cluster, and
-      no server.
+      Most of the faults are workload shaping rather than infrastructure
+      chaos. A prefix-diversity attack gives every request a unique prefix. A
+      long-output burst makes sequences hold their blocks for minutes. A
+      bimodal mix pairs very short requests with very long ones. These are
+      cheap to run and far more repeatable than killing containers. The rest
+      are config faults, where the server restarts in a degraded state, and
+      each restart is its own labelled fault.
+    </p>
+    <p>
+      Every run writes a <code>metrics.parquet</code> and a
+      <code>ground_truth.json</code>, and both are committed. Scoring replays
+      those files from disk. No GPU, no cluster, no running server.
     </p>
 
-    <!-- --- 4 -->
+    <!-- 4 -->
     <section class="sec">
       <p class="mark">&#167; 4</p>
       <h2>The result, including the part that stings</h2>
     </section>
 
     <p>
-      A top-1 number in isolation says nothing about whether eight layers of
-      statistics earn their complexity. So the pipeline is scored against three
-      classical baselines and against a frontier model given the same evidence.
+      A top-1 number on its own tells you nothing about whether eight layers of
+      statistics were worth writing. So the pipeline is scored against three
+      simple baselines and against a frontier model given the same evidence.
     </p>
 
     <figure class="wide">
@@ -636,9 +647,9 @@
         </table>
       </div>
       <figcaption>
-        38 runs, five confusable mechanisms, eight clean. <b>FPR</b> is the
-        share of clean runs on which a method named something. Random guessing
-        among five mechanisms would score 20% top-1 and 60% top-3.
+        38 runs, five confusable mechanisms, eight clean. <b>FPR</b> is how
+        often a method named something on a clean run. Guessing at random among
+        five mechanisms would score 20% top-1 and 60% top-3.
       </figcaption>
     </figure>
 
@@ -646,53 +657,51 @@
       <p class="label">The uncomfortable row</p>
       <p>
         <strong>Static threshold alerting wins top-1.</strong> Three points
-        ahead of the thing I built. If I only reported top-1, the honest
-        conclusion would be that the pipeline is not worth running.
+        ahead of the thing I built. If top-1 were the only number I reported,
+        the honest conclusion would be that the pipeline is not worth running.
       </p>
     </div>
 
     <p>
-      It is worth running for a different reason, and the rest of the row says
-      why: threshold alerting is <em>useless past rank 1</em>. Its top-3 never
-      improves on its top-1, because once the first runbook rule fires there is
-      nothing meaningful behind it. Against it the pipeline is +32 points of
-      top-3 and +0.14 MRR. What the pipeline produces is a ranked shortlist an
-      engineer can work down; what a threshold produces is one guess and a
-      shrug.
+      The rest of the row is why it is still worth running. Threshold alerting
+      is useless past its first guess. Its top-3 is identical to its top-1,
+      because once the first runbook rule fires there is nothing meaningful
+      behind it. The pipeline gives you a ranked shortlist you can work down.
+      Against threshold that is 32 more points of top-3 and 0.14 more MRR.
     </p>
     <p>
-      The fairer comparison is against whichever baseline is strongest on each
-      metric, and it is a narrower win: +7.9 points of top-3 over the language
-      model and +0.06 MRR over correlation. That is the number I would defend.
-      The pipeline leads on ranked quality, it leads consistently, and the lead
-      is real but not large.
+      Compare instead against whichever baseline is strongest on each metric
+      and the win gets much smaller: 7.9 points of top-3 over the language
+      model, and 0.06 MRR over correlation. That is the number I would defend.
+      The pipeline leads on ranked quality, and it leads consistently, but the
+      margin is modest and I am not going to dress it up.
     </p>
     <p>
-      Correlation behaves exactly as predicted: it ties on top-1 and loses 13
-      points of top-3, because it cannot separate a cause from its own effect.
-      Topology &#8212; always blame the graph root, ignoring telemetry entirely &#8212;
-      scores a non-trivial 58% top-3, which is a useful reminder of how much a
-      shortlist gets for free from knowing the architecture, and it names
-      something on <em>every</em> clean run.
+      Correlation does exactly what I predicted it would. It ties on top-1 and
+      loses 13 points of top-3, because it cannot separate a cause from its own
+      effect. Topology is the floor: it ignores the telemetry completely and
+      just blames whatever sits furthest upstream. It still scores 58% top-3,
+      which is a good reminder of how much a shortlist gets for free from
+      knowing the architecture. It also names something on every single clean
+      run.
     </p>
     <p>
-      Claude Opus 5, handed the same per-component before/after evidence,
-      reaches 34% top-1 and 0.496 MRR &#8212; genuinely competitive, and better than
-      I expected. It is also the fairest available answer to &#8220;why not just ask
-      a model?&#8221; The gap is that the model never sees onset timing, and onset
-      ordering is the pipeline's entire mechanism. That suggests the
-      interesting system is not one or the other but the model reading the
-      pipeline's timing output, which is roughly what the explainer stage does.
+      Claude Opus 5 gets 34% top-1 and 0.496 MRR from the same per-component
+      evidence. That is competitive, and better than I expected. It is also the
+      fairest answer I have to &#8220;why not just ask a model?&#8221; The gap
+      is that the model never sees onset timing, and onset timing is the whole
+      basis of the pipeline's ranking. Which suggests the interesting system is
+      neither one alone, but a model reading the pipeline's timing output.
     </p>
 
-    <!-- --- 5 -->
+    <!-- 5 -->
     <section class="sec">
       <p class="mark">&#167; 5</p>
       <h2>The dominant failure is not statistical</h2>
     </section>
 
     <p>
-      The confusion matrix is where the actual finding lives.
+      The confusion matrix is where the real finding is.
     </p>
 
     <figure class="wide">
@@ -728,10 +737,10 @@
         </table>
       </div>
       <figcaption>
-        A perfect diagnoser is diagonal. Note where the off-diagonal mass
-        collects: almost all of it lands in two columns &#8212;
+        A perfect diagnoser is a diagonal line. Look at where the misses land
+        instead: almost all of them pile into two columns,
         <b>kv_cache_pressure</b> and <b>batch_composition</b>. That is not
-        random error, and the reason turns out to have nothing to do with the
+        random error. The reason turns out to have nothing to do with the
         statistics.
       </figcaption>
     </figure>
@@ -739,80 +748,83 @@
     <div class="note-block">
       <p class="label">The finding</p>
       <p>
-        The pipeline ranks by onset order, and onset is measured from the
-        telemetry &#8212; not from the event. <strong>How a metric is measured
-        determines when it appears to move.</strong> A gauge-backed effect
-        systematically outranks its own rate-backed cause.
+        The pipeline ranks by which mechanism moved first. But it reads
+        &#8220;first&#8221; from the telemetry, not from the event.
+        <strong>How a metric is measured decides when it appears to
+        move.</strong> So an effect read from a gauge beats its own cause read
+        from a rate, every time.
       </p>
     </div>
 
     <p>
-      Gauges &#8212; <code>kv_cache_usage_perc</code>,
-      <code>num_requests_running</code> &#8212; report their new value on the very
-      next scrape. Windowed rates and histogram quantiles &#8212;
-      <code>rate(...[30s])</code>, <code>histogram_quantile</code> over buckets
-      &#8212; only reach their new value once the window fills, roughly half a window
-      late. Two mechanisms in this domain are read from instantaneous gauges,
-      and those are precisely the two columns absorbing the off-diagonal mass.
+      Gauges report immediately. <code>kv_cache_usage_perc</code> and
+      <code>num_requests_running</code> show their new value on the very next
+      scrape. Windowed rates and histogram quantiles do not.
+      <code>rate(...[30s])</code> and <code>histogram_quantile</code> over
+      buckets only reach their new value once the window has filled, which is
+      roughly half a window late.
     </p>
     <p>
-      The pipeline compensates by shifting each series back by half its window
-      before ranking. A/B'd on this corpus that is worth +2.7 points of top-1,
-      so it stays on &#8212; but it is a correction, not a cure. Fixing this properly
-      means changing what is measured, not how it is ranked: exporting
-      per-mechanism event timestamps rather than inferring onset from
-      aggregates.
+      Two mechanisms in this domain are read from instantaneous gauges. Those
+      are precisely the two columns collecting the misses. The pipeline
+      compensates by shifting each series back by half its window before
+      ranking, which is worth 2.7 points of top-1 on this corpus, so it stays
+      on. But it is a patch, not a fix. Fixing it properly means changing what
+      gets measured, not how it gets ranked.
     </p>
     <p>
-      I find this the most useful thing the project produced, because it
-      generalizes past vLLM. Any onset-ordering method run over a Prometheus
-      scrape is subject to it, and I have not seen it stated. It also means a
-      published top-1 number for this class of method is partly a measurement
-      of the exporter's design.
+      This is the most useful thing the project turned up, because it is not
+      about vLLM. Any method that ranks causes by onset order over Prometheus
+      data has this problem, and I have not seen it written down. It also means
+      a published accuracy number for this class of method is partly measuring
+      the exporter's design choices.
     </p>
 
-    <!-- --- 6 -->
+    <!-- 6 -->
     <section class="sec">
       <p class="mark">&#167; 6</p>
       <h2>Two things wrong with my own corpus</h2>
     </section>
 
     <p>
-      Both of these I found while building the results page, which is an
+      I found both of these while building the results page, which is an
       argument for building the results page.
     </p>
 
     <h3>Nine runs never had a clean baseline</h3>
     <p>
-      The capture protocol runs baseline, inject, fault, repeat. When the
-      previous run's load has not finished draining, the baseline window opens
-      with p99 TTFT already 300&#8211;600&#215; its own median. Layer 1 calibrates its
-      mean and standard deviation from that window, so an inflated sigma
-      desensitizes the detector and nothing in the fault window clears
-      threshold. The validity check I had written passes these runs &#8212; it looks
-      at offered-versus-completed throughput and backlog growth, and by those
-      measures the load generator was healthy. The server was simply still
-      working off the last incident.
+      Each run does the same thing: record a baseline, inject a fault, record
+      the fault window, repeat. Sometimes the previous run's load had not
+      finished draining. When that happens the baseline window opens with p99
+      TTFT already 300 to 600 times its own median.
     </p>
     <p>
-      Top-1 is <strong>11%</strong> on those nine runs and <strong>48%</strong>
-      on the twenty-nine that started quiet. The headline 39% counts all
-      thirty-eight anyway. Dropping a quarter of a corpus raises your score,
-      and that is a move that should be argued in the open rather than applied
-      quietly &#8212; so it is reported and left out of the totals.
+      That breaks the detector. Layer 1 works out a mean and a standard
+      deviation from the baseline window, and a huge standard deviation means
+      nothing in the fault window ever looks unusual enough to flag. The
+      validity check I had written passes these runs, because it only looks at
+      whether the load generator was keeping up. It was. The server was just
+      still busy with the last incident.
+    </p>
+    <p>
+      Top-1 on those nine runs is <strong>11%</strong>. On the twenty-nine that
+      started quiet it is <strong>48%</strong>. The headline 39% counts all
+      thirty-eight anyway. Dropping a quarter of your corpus raises your score,
+      and that is a move you make in the open or not at all, so it is reported
+      here and left out of the totals.
     </p>
 
     <h3>The SLI is coarsely bucketed</h3>
     <p>
       <code>time_to_first_token_seconds</code> is a Prometheus histogram, and
       p99 is interpolated from its buckets. Across these traces the quantile
-      spends most of its time pinned to two values &#8212; 0.248 s and 159.2 s &#8212;
-      which are bucket edges, not measurements. Genuine small TTFT movements
-      are invisible, and the SLI reads as a step function rather than a curve.
-      Anything finer needs custom bucket boundaries set at deploy time.
+      spends most of its time stuck on two values, 0.248 s and 159.2 s. Those
+      are bucket edges, not measurements. Real but small TTFT movements are
+      invisible, and the SLI reads as a staircase instead of a curve. Getting
+      finer detail means setting custom bucket boundaries at deploy time.
     </p>
 
-    <!-- --- 7 -->
+    <!-- 7 -->
     <section class="sec">
       <p class="mark">&#167; 7</p>
       <h2>What I would do differently</h2>
@@ -820,31 +832,30 @@
 
     <ul>
       <li>
-        <strong>Instrument onset directly.</strong> The measurement-modality
-        bias is not fixable downstream. A small exporter emitting a timestamp
-        when each mechanism crosses a state boundary would remove the dominant
-        error source entirely, at the cost of no longer being black-box.
+        <strong>Instrument onset directly.</strong> The measurement bias cannot
+        be fixed downstream. A small exporter that emits a timestamp whenever a
+        mechanism crosses a state boundary would remove the biggest source of
+        error outright. The cost is that it stops being black-box.
       </li>
       <li>
-        <strong>Gate the baseline on the SLI, not just on load.</strong> One
-        additional check &#8212; the SLI must be within a few multiples of its own
-        median before the window opens &#8212; would have saved nine runs and roughly
+        <strong>Check the SLI before opening a baseline window, not just the
+        load.</strong> One extra condition would have saved nine runs and about
         a third of the GPU budget.
       </li>
       <li>
         <strong>Set histogram buckets before capturing.</strong> Bucket
-        boundaries are a deploy-time decision, and I discovered they mattered
-        after the GPU was returned.
+        boundaries are a deploy-time decision. I worked out that they mattered
+        after the GPU was already returned.
       </li>
       <li>
-        <strong>More repeats per scenario, fewer scenarios.</strong> Three runs
-        of <code>queue_starved</code> cannot distinguish a real weakness from
-        noise. Five mechanisms measured well would say more than seven measured
-        thinly.
+        <strong>Fewer scenarios, more repeats.</strong> Three runs of
+        <code>queue_starved</code> cannot tell a real weakness apart from
+        noise. Five mechanisms measured properly would say more than seven
+        measured thinly.
       </li>
     </ul>
 
-    <!-- --- 8 -->
+    <!-- 8 -->
     <section class="sec">
       <p class="mark">&#167; 8</p>
       <h2>Reproducing it</h2>
@@ -852,10 +863,14 @@
 
     <p>
       The traces are in the repository. Scoring replays them from Parquet, so a
-      clean clone re-derives every number on this page without a GPU. The
-      pipeline is deterministic &#8212; Layer 1's block bootstrap is seeded per
-      <code>(component, metric)</code>, after I found that repeated evaluations
-      of the same corpus were producing different top-3 numbers.
+      fresh clone re-derives every number on this page without a GPU.
+    </p>
+    <p>
+      The pipeline is deterministic. Layer 1's block bootstrap is seeded per
+      component and metric, which I added after noticing that running the same
+      evaluation twice gave different top-3 numbers. The threshold is a
+      percentile of a thousand random resamples, so change points sitting near
+      it were flipping between runs.
     </p>
 
     <pre><code>git clone https://github.com/aryansharma2k2/microservice-blackbox-rca
@@ -865,9 +880,9 @@ pip install -e ".[dev]"
 make eval</code></pre>
 
     <p>
-      CI asserts diagnostic accuracy on every push &#8212; an accuracy floor and a
-      false-positive ceiling, both derived from measurement rather than
-      aspiration &#8212; so a change that quietly degrades diagnosis fails the build.
+      CI checks the accuracy on every push, against both a floor and a
+      false-positive ceiling taken from the measurements above. A change that
+      quietly makes the diagnosis worse fails the build.
     </p>
 
     <footer class="colophon">
