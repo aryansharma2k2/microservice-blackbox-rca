@@ -1,18 +1,18 @@
-# TTFT-RCA — root-cause localization inside an LLM inference server
+# vLLM RCA — root-cause localization for p99 TTFT
 
 When p99 time-to-first-token spikes on a vLLM server, which subsystem caused it?
 This is a change-point pipeline that answers that from Prometheus telemetry alone —
 no code changes, no profiler, no request traces — and a labelled fault corpus that
 measures how often the answer is right.
 
-**[Live dashboard](https://aryansharma2k2.github.io/microservice-blackbox-rca/)** ·
+**[Live dashboard](https://aryansharma2k2.github.io/vllm-blackbox-rca/)** ·
 [the engine](rca_engine/fault_chain.py) ·
 [the mechanism graph](rca_engine/domains/vllm.py) ·
 [the evaluation](eval/run_eval.py)
 
 ```bash
-git clone https://github.com/aryansharma2k2/microservice-blackbox-rca
-cd microservice-blackbox-rca && pip install -e ".[dev]"
+git clone https://github.com/aryansharma2k2/vllm-blackbox-rca
+cd vllm-blackbox-rca && pip install -e ".[dev]"
 make eval          # re-derives every number below. no GPU, no cluster, no server.
 ```
 

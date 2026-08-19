@@ -4,14 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Root-cause localization inside a vLLM inference server: which subsystem made p99 TTFT spike, measured against threshold alerting, correlation, and a frontier model.">
-    <title>TTFT-RCA — Root-cause localization inside an LLM inference server</title>
+    <title>vLLM RCA — Root-cause localization for p99 TTFT</title>
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
     <header class="topbar">
       <a class="brand" href="#top">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>TTFT&#8209;RCA</span>
+        <span>vLLM&nbsp;RCA</span>
       </a>
       <nav class="nav" aria-label="Sections">
         <a href="#result">Result</a>
@@ -21,7 +21,7 @@
         <a href="#pipeline">Pipeline</a>
         <a href="#boutique">Second domain</a>
         <a href="./writeup.html">Writeup</a>
-        <a class="ghost" href="https://github.com/aryansharma2k2/microservice-blackbox-rca">GitHub</a>
+        <a class="ghost" href="https://github.com/aryansharma2k2/vllm-blackbox-rca">GitHub</a>
       </nav>
     </header>
 
@@ -339,8 +339,8 @@
           </p>
         </div>
         <div class="command-grid">
-          <pre><code>git clone https://github.com/aryansharma2k2/microservice-blackbox-rca
-cd microservice-blackbox-rca
+          <pre><code>git clone https://github.com/aryansharma2k2/vllm-blackbox-rca
+cd vllm-blackbox-rca
 pip install -e ".[dev]"
 
 make eval</code></pre>
@@ -359,11 +359,11 @@ python -m rca_engine.scripts.gen_portfolio_data</code></pre>
 
     <footer class="footer">
       <div>
-        <strong>TTFT&#8209;RCA</strong>
+        <strong>vLLM&nbsp;RCA</strong>
         <span data-bind="footer.provenance">—</span>
       </div>
       <div class="footer-links">
-        <a href="https://github.com/aryansharma2k2/microservice-blackbox-rca">Source</a>
+        <a href="https://github.com/aryansharma2k2/vllm-blackbox-rca">Source</a>
         <a href="#top">Back to top</a>
       </div>
     </footer>

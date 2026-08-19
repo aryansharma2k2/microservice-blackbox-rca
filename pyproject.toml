@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "microservice-blackbox-rca"
+name = "vllm-blackbox-rca"
 version = "0.1.0"
 description = "Black-box root-cause analysis over Prometheus telemetry, for microservices and LLM inference engines."
 readme = "README.md"
